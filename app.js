@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 // ===================== 小道具 =====================
 const $ = (s, r = document) => r.querySelector(s);
@@ -652,20 +652,47 @@ function lines({ series, xMax = 31, h = 170, sel = 1, key, signedAxis = false, a
   return `<svg class="chart" viewBox="0 0 ${W} ${h}" role="img" aria-label="${esc(aria)}" data-a="pace-tap" data-noswipe data-k="${key}" data-padl="${padL}" data-w="${W}" data-xmax="${xMax}" style="cursor:crosshair">${g}</svg>`;
 }
 
-function balanceCard(inc, exp, title, subtitle, mode) {
-  const tot = inc + exp, net = inc - exp;
-  const center = mode === 'rate'
-    ? `<span>貯蓄率</span><b style="font-size:24px">${inc > 0 ? pct(net / inc) : '—'}</b>`
-    : `<span>収支</span><b style="font-size:17px;color:${tot === 0 ? 'var(--sub)' : net >= 0 ? INCOME : EXPENSE}">${syen(net)}</b>`;
-  const blk = (label, color, v) => `<div class="blk"><div class="h"><i class="dot" style="background:${color}"></i>${label}<em class="num">${tot > 0 ? pct(v / tot) : ''}</em></div><b style="color:${color}">${yen(v)}</b></div>`;
-  return `<section class="card" aria-label="${esc(title)}。収入 ${yen(inc)}、支出 ${yen(exp)}、収支 ${syen(net)}" style="display:flex;flex-direction:column;gap:16px;border-radius:22px;padding:20px">
+/** 割合の文字を円の上に入れるドーナツ（9%未満の部分には文字を出さない） */
+function donutL(slices, size, sw) {
+  const r = (size - sw) / 2, c = size / 2, C = 2 * Math.PI * r;
+  const live = slices.filter((s) => s.v > 0);
+  const tot = sum(live, (s) => s.v);
+  const gap = live.length > 1 ? 3 : 0;
+  let acc = 0, arcs = '', labs = '';
+  for (const s of live) {
+    const len = s.v / tot * C;
+    arcs += `<circle cx="${c}" cy="${c}" r="${r}" stroke="${s.color}" stroke-dasharray="${Math.max(0, len - gap).toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-acc).toFixed(2)}"/>`;
+    if (s.label && s.v / tot >= 0.09) {
+      const ang = (acc + len / 2) / C * 2 * Math.PI - Math.PI / 2;
+      labs += `<text x="${(c + r * Math.cos(ang)).toFixed(1)}" y="${(c + r * Math.sin(ang) + 4).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="800" fill="#0C0C0E">${esc(s.label)}</text>`;
+    }
+    acc += len;
+  }
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true"><g transform="rotate(-90 ${c} ${c})" fill="none" stroke-width="${sw}"><circle cx="${c}" cy="${c}" r="${r}" stroke="#222226"/>${arcs}</g>${labs}</svg>`;
+}
+
+/** 収入を100%として、支出と収支（収入−支出）の割合を表示するカード */
+function balanceCard(inc, exp, title, subtitle) {
+  const net = inc - exp, ok = inc > 0, none = inc + exp === 0;
+  const ep = ok ? exp / inc : null, np = ok ? net / inc : null;
+  const nc = net >= 0 ? INCOME : EXPENSE;
+  const p1 = (v) => (v < 0 ? '−' : '') + pct(Math.abs(v));
+  const ring = ok ? [
+    { v: Math.max(net, 0), color: INCOME, label: Math.round(np * 100) + '%' },
+    { v: Math.min(exp, inc), color: EXPENSE, label: Math.round(ep * 100) + '%' },
+  ] : [];
+  const blk = (label, dot, color, v, p, extra = '') => `<div class="blk${extra}"><div class="h">${dot}${label}<em class="num" style="color:${p === null ? 'var(--sub)' : color}">${p === null ? '—' : p}</em></div><b style="color:${none ? 'var(--sub)' : color}">${v}</b></div>`;
+  return `<section class="card" aria-label="${esc(title)}。収入 ${yen(inc)}、支出 ${yen(exp)}${ok ? '（収入の' + pct(ep) + '）' : ''}、収支 ${syen(net)}${ok ? '（' + p1(np) + '）' : ''}" style="display:flex;flex-direction:column;gap:16px;border-radius:22px;padding:20px">
     ${secTitle(title, subtitle)}
     <div class="balance">
-      <div class="donut" style="width:140px;height:140px">${donut([{ v: inc, color: INCOME }, { v: exp, color: EXPENSE }], 140, 14)}<div class="center">${center}</div></div>
-      <div class="side">${blk('収入', INCOME, inc)}${blk('支出', EXPENSE, exp)}
-        ${mode === 'rate' ? `<div style="display:flex;justify-content:space-between;align-items:baseline;padding-top:8px;border-top:1px solid var(--divider)"><span class="sub" style="font-size:12px">収支</span><b class="serif" style="font-size:15px;color:${net >= 0 ? INCOME : EXPENSE}">${syen(net)}</b></div>` : ''}
+      <div class="donut" style="width:150px;height:150px">${donutL(ring, 150, 30)}<div class="center"><span>収支</span><b style="font-size:15px;color:${none ? 'var(--sub)' : nc}">${syen(net)}</b></div></div>
+      <div class="side">
+        ${blk('収入', '<i class="dot ring"></i>', INCOME, yen(inc), ok ? '100%' : null)}
+        ${blk('支出', `<i class="dot" style="background:${EXPENSE}"></i>`, EXPENSE, yen(exp), ok ? pct(ep) : null)}
+        ${blk('収支', `<i class="dot" style="background:${nc}"></i>`, nc, syen(net), ok ? p1(np) : null, ' net')}
       </div>
     </div>
+    ${ok && exp > inc ? `<div class="over-note">支出が収入を ${yen(exp - inc)} 超えています（収入の ${pct(ep)}）</div>` : ''}
   </section>`;
 }
 
@@ -703,8 +730,8 @@ function vHome() {
       ${list.length > 5 ? `<button class="link" data-a="tab" data-v="history" style="margin-top:6px">履歴をすべて見る ${ic('chevR', 14)}</button>` : ''}</section>`;
   }
   return `<div class="screen"><div class="scroll" data-scroll="home"><div class="pad">
-    ${monthSel(ym, 'home')}
-    ${balanceCard(inc, exp, `${ym.m}月の収入と支出`, hasPlan ? `予定を含む` : `${ym.m}/1–${ym.m}/${endDay}`, 'balance')}
+    <div class="home-head">${monthSel(ym, 'home')}<span class="ver">ver${APP_VERSION}</span></div>
+    ${balanceCard(inc, exp, `${ym.m}月の収入と支出`, hasPlan ? `予定を含む` : `${ym.m}/1–${ym.m}/${endDay}`)}
     ${body}
   </div></div></div>`;
 }
@@ -878,7 +905,7 @@ function anaBalance() {
   const s = months[si];
   const isNow = YM.eq(ym, YM.now());
   const r = exp > 0 ? fixed / exp : 0;
-  return balanceCard(inc, exp, '収入と支出の割合', YM.label(ym), 'rate') +
+  return balanceCard(inc, exp, '収入と支出の割合', YM.label(ym)) +
     `<div class="tiles">
       ${tile('1日あたりの支出', yen(Math.round(exp / el)), `${el}日間の平均`)}
       ${tile('支出の先月比', prevExp > 0 ? (exp >= prevExp ? '+' : '−') + pct(Math.abs(exp - prevExp) / prevExp) : '—', prevExp > 0 ? `先月 ${yen(prevExp)}` : '先月の記録なし')}
@@ -1042,7 +1069,7 @@ function yBalance() {
   const s = months[si];
   const r = exp > 0 ? fixed / exp : 0;
   const best = months.slice(0, n).reduce((a, m) => (m.net > a.net ? m : a), months[0]);
-  return balanceCard(inc, exp, '収入と支出の割合', `${y}年`, 'rate') +
+  return balanceCard(inc, exp, '収入と支出の割合', `${y}年`) +
     `<div class="tiles">
       ${tile('月平均の支出', yen(Math.round(exp / n)), `${n}か月の平均`)}
       ${tile('月平均の収入', yen(Math.round(inc / n)), `${n}か月の平均`)}

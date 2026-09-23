@@ -1,5 +1,5 @@
 // オフライン用：アプリ本体をすべて端末に保存し、通信なしで起動できるようにする
-const VERSION = 'kakeibo-v1.5.0'; // 更新するときはこの数字を上げる
+const VERSION = 'kakeibo-v1.6.0'; // 更新するときはこの数字を上げる
 const FILES = [
   './',
   './index.html',

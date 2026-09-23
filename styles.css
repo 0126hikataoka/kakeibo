@@ -142,7 +142,14 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 .balance .blk { display: flex; flex-direction: column; gap: 2px; }
 .balance .blk .h { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--sub); }
 .balance .blk .h em { margin-left: auto; font-style: normal; }
-.balance .blk b { font-family: var(--serif); font-size: 19px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot.ring { background: none !important; border: 2px solid var(--income); box-sizing: border-box; }
+.balance { gap: 14px; }
+.balance .side { gap: 10px; }
+.balance .blk.net { padding-top: 10px; border-top: 1px solid var(--divider); }
+.over-note { font-size: 12px; color: var(--expense); background: rgba(229,100,90,.1); border: 1px solid rgba(229,100,90,.3); border-radius: 10px; padding: 8px 10px; line-height: 1.5; }
+.home-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.home-head .ver { font-size: 11px; color: #FFFFFF; letter-spacing: .02em; white-space: nowrap; }
+.balance .blk b { font-family: var(--serif); font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chart { width: 100%; height: auto; overflow: visible; }
 .chart text { font-family: var(--sans); }
 .range { width: 100%; accent-color: var(--gold); height: 32px; }
