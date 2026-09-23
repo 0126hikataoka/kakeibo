@@ -23,13 +23,14 @@
   --sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --tab-h: 62px;
+  --tab-h: 58px;
+  --app-h: 100vh;
   color-scheme: dark;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--sans); }
-body { position: fixed; inset: 0; width: 100%; overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+html, body { margin: 0; height: 100vh; height: var(--app-h); overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--sans); }
+body { position: fixed; top: 0; left: 0; right: 0; width: 100%; overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; }
 button:disabled { cursor: default; }
@@ -46,7 +47,7 @@ svg { display: block; }
 
 /* ===== レイアウト ===== */
 /* 画面全体：上から「中身」→「タブバー」の順に縦に並べ、タブバーを常に一番下へ */
-#app { position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden; }
+#app { position: fixed; top: 0; left: 0; right: 0; height: 100vh; height: var(--app-h); display: flex; flex-direction: column; overflow: hidden; }
 .screen {
   position: relative; flex: 1; min-height: 0;
   padding-top: var(--safe-top);
@@ -59,7 +60,8 @@ svg { display: block; }
 /* ===== タブバー ===== */
 .tabbar {
   position: relative; flex-shrink: 0; z-index: 10;
-  height: calc(var(--tab-h) + var(--safe-bottom)); padding-bottom: var(--safe-bottom);
+  --tab-pb: max(calc(var(--safe-bottom) - 12px), 4px);
+  height: calc(var(--tab-h) + var(--tab-pb)); padding-bottom: var(--tab-pb);
   background: var(--tabbar); border-top: 1px solid var(--divider);
   display: flex; align-items: flex-start; padding-top: 8px;
 }
@@ -147,7 +149,7 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 
 /* ===== 記録画面 ===== */
 .page {
-  position: fixed; inset: 0; z-index: 30; background: var(--bg);
+  position: fixed; top: 0; left: 0; right: 0; height: 100vh; height: var(--app-h); z-index: 30; background: var(--bg);
   padding-top: var(--safe-top); padding-bottom: 0;
   display: flex; flex-direction: column;
 }
@@ -191,7 +193,7 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 .page > .scroll:last-child { padding-bottom: var(--safe-bottom); }
 
 /* ===== シート ===== */
-.sheet-bg { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.6); display: flex; flex-direction: column; justify-content: flex-end; }
+.sheet-bg { position: fixed; top: 0; left: 0; right: 0; height: 100vh; height: var(--app-h); z-index: 40; background: rgba(0,0,0,.6); display: flex; flex-direction: column; justify-content: flex-end; }
 .sheet-bg.anim { animation: fade .18s ease-out; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 .sheet { background: var(--card); border-top: 1px solid var(--stroke); border-radius: 24px 24px 0 0; max-height: 92%; display: flex; flex-direction: column; padding-bottom: var(--safe-bottom); }

@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 // ===================== 小道具 =====================
 const $ = (s, r = document) => r.querySelector(s);
@@ -1993,6 +1993,22 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { clearTimeout(saveTimer); writeState(); }
   else if (S && generateRecurring()) render();
 });
+
+// ホーム画面から開いたとき、画面の一番下まで使えるように高さを合わせる
+function fitHeight() {
+  const standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  let h = Math.max(window.innerHeight, document.documentElement.clientHeight);
+  if (standalone && screen && screen.height) {
+    const portrait = window.innerWidth <= window.innerHeight;
+    const full = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width);
+    if (full > h && full - h < 140) h = full;
+  }
+  document.documentElement.style.setProperty('--app-h', h + 'px');
+}
+fitHeight();
+window.addEventListener('resize', fitHeight);
+window.addEventListener('orientationchange', () => setTimeout(fitHeight, 300));
+window.addEventListener('pageshow', fitHeight);
 
 async function start() {
   const saved = await loadState();
