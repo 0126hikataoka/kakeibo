@@ -28,8 +28,8 @@
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
-body { overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--sans); }
+body { position: fixed; inset: 0; width: 100%; overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; }
 button:disabled { cursor: default; }
@@ -45,11 +45,11 @@ button:disabled { cursor: default; }
 svg { display: block; }
 
 /* ===== レイアウト ===== */
-#app { height: 100%; }
+/* 画面全体：上から「中身」→「タブバー」の順に縦に並べ、タブバーを常に一番下へ */
+#app { position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden; }
 .screen {
-  position: fixed; inset: 0;
+  position: relative; flex: 1; min-height: 0;
   padding-top: var(--safe-top);
-  padding-bottom: calc(var(--tab-h) + var(--safe-bottom));
   display: flex; flex-direction: column;
 }
 .scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
@@ -58,7 +58,7 @@ svg { display: block; }
 
 /* ===== タブバー ===== */
 .tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  position: relative; flex-shrink: 0; z-index: 10;
   height: calc(var(--tab-h) + var(--safe-bottom)); padding-bottom: var(--safe-bottom);
   background: var(--tabbar); border-top: 1px solid var(--divider);
   display: flex; align-items: flex-start; padding-top: 8px;
@@ -148,7 +148,7 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 /* ===== 記録画面 ===== */
 .page {
   position: fixed; inset: 0; z-index: 30; background: var(--bg);
-  padding-top: var(--safe-top); padding-bottom: var(--safe-bottom);
+  padding-top: var(--safe-top); padding-bottom: 0;
   display: flex; flex-direction: column;
 }
 .page.anim { animation: up .22s ease-out; }
@@ -187,7 +187,8 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 .keypad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 8px 20px 0; flex-shrink: 0; }
 .keypad button { min-height: 44px; border-radius: 12px; background: #151518; font-family: var(--serif); font-size: 21px; display: flex; align-items: center; justify-content: center; }
 .keypad button:active { background: #232327; }
-.save-wrap { padding: 10px 20px 10px; flex-shrink: 0; }
+.save-wrap { padding: 8px 20px calc(8px + var(--safe-bottom)); flex-shrink: 0; }
+.page > .scroll:last-child { padding-bottom: var(--safe-bottom); }
 
 /* ===== シート ===== */
 .sheet-bg { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.6); display: flex; flex-direction: column; justify-content: flex-end; }
@@ -325,10 +326,8 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 @media (min-width: 600px) {
-  .screen, .page, .tabbar { max-width: 480px; margin: 0 auto; }
-  .screen, .page { left: 50%; transform: translateX(-50%); }
+  #app, .page { left: 50%; right: auto; width: 100%; max-width: 480px; transform: translateX(-50%); }
   .page.anim { animation: none; }
-  .tabbar { left: 50%; transform: translateX(-50%); width: 100%; }
   .sheet { max-width: 480px; margin: 0 auto; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -350,7 +349,7 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 
 /* ===== カレンダー：上に収入、下に支出 ===== */
 .cal button { min-height: 58px; gap: 1px; }
-.cal button .n { font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1.25; }
+.cal button .n { font-size: 9px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1.25; }
 .cal button .n.in { color: var(--income); }
 .cal button .n.ex { color: var(--expense); }
 .cal button.plan .n { opacity: .5; }
@@ -375,3 +374,8 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 @keyframes inD { from { transform: translateY(-28px); opacity: .35; } to { transform: none; opacity: 1; } }
 @keyframes bumpU { 35% { transform: translateY(-10px); } to { transform: none; } }
 @media (prefers-reduced-motion: reduce) { .in-u, .in-d, .bump-u { animation: none; } }
+
+.cal button .n.long { font-size: 8px; letter-spacing: -.04em; }
+.cal button .n.xlong { font-size: 7px; letter-spacing: -.05em; }
+.note-box { font-size: 12px; color: var(--sub); line-height: 1.6; padding: 10px 12px; border-radius: 12px; background: var(--card2); }
+.pill-top { display: flex; gap: 8px; }

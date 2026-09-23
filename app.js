@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 // ===================== 小道具 =====================
 const $ = (s, r = document) => r.querySelector(s);
@@ -138,7 +138,7 @@ const SEED = {
 };
 
 function freshState() {
-  const st = { version: 1, genres: [], categories: [], entries: [], rules: [] };
+  const st = { version: 1, genres: [], categories: [], entries: [], rules: [], settings: { includePlanned: false } };
   let order = 0;
   for (const kind of ['expense', 'income']) {
     SEED[kind].forEach(([gname, cats], gi) => {
@@ -334,8 +334,11 @@ function generateRecurring() {
     for (const d of occurrences(r, now)) {
       if (last && d <= last) continue;
       if (floor && d < floor) continue;
-      S.entries.push({ id: uid(), date: toLocal(d), amount: r.amount, kind: r.kind, cat: r.cat, genre: r.genre, color: r.color, memo: r.memo, ruleId: r.id, createdAt: toLocal(new Date()) });
       r.lastGen = toLocal(d);
+      const ov = r.overrides && r.overrides[ymd(d)]; // その日だけの変更
+      if (ov && ov.skip) continue;
+      S.entries.push(Object.assign({ id: uid(), date: toLocal(d), amount: r.amount, kind: r.kind, cat: r.cat, genre: r.genre, color: r.color, memo: r.memo },
+        ov || {}, { ruleId: r.id, occKey: ymd(d), createdAt: toLocal(new Date()) }));
       r.genCount = (r.genCount || 0) + 1;
       added++;
     }
@@ -346,21 +349,43 @@ function generateRecurring() {
 
 /** 未来の予定（まだ記録されていない繰り返し）。保存はせず、表示にだけ使う */
 function maxAhead() { return Math.max(0, ...S.rules.filter((r) => r.active).map((r) => Number(r.ahead) || 0)); }
-function plannedEntries(from, to) {
+/** all=true のときは「未来の予定」の設定にかかわらず、to までの予定をすべて返す（集計に含める用） */
+function plannedEntries(from, to, all = false) {
   const today = sod(new Date()), out = [];
   for (const r of S.rules) {
     const ahead = Number(r.ahead) || 0;
-    if (!r.active || ahead <= 0) continue;
-    const horizon = new Date(today.getFullYear(), today.getMonth() + ahead, today.getDate());
-    const lim = to && to < horizon ? to : horizon;
+    if (!r.active || (!all && ahead <= 0)) continue;
+    let lim;
+    if (all) { if (!to) continue; lim = to; }
+    else {
+      const horizon = new Date(today.getFullYear(), today.getMonth() + ahead, today.getDate());
+      lim = to && to < horizon ? to : horizon;
+    }
+    if (lim <= today) continue;
     const last = r.lastGen ? parse(r.lastGen) : null;
+    const floor = r.fromMode && r.fromMode !== 'start' && r.fromDate ? sod(parse(r.fromDate)) : null;
     for (const d of occurrences(r, lim)) {
-      if (sod(d) <= today || (last && d <= last) || (from && d < from)) continue;
-      out.push({ id: 'plan:' + r.id + ':' + toLocal(d), date: toLocal(d), amount: r.amount, kind: r.kind, cat: r.cat, genre: r.genre, color: r.color, memo: r.memo, ruleId: r.id, planned: true });
+      if (sod(d) <= today || (last && d <= last) || (floor && d < floor)) continue;
+      const key = ymd(d);
+      const ov = r.overrides && r.overrides[key];
+      if (ov && ov.skip) continue;
+      const e = Object.assign({ date: toLocal(d), amount: r.amount, kind: r.kind, cat: r.cat, genre: r.genre, color: r.color, memo: r.memo }, ov || {},
+        { id: 'plan:' + r.id + ':' + key, ruleId: r.id, occKey: key, planned: true, edited: !!ov });
+      if (from && dt(e) < from) continue;
+      if (to && sod(dt(e)) > sod(to)) continue;
+      out.push(e);
     }
   }
   return out;
 }
+/** 集計に使う記録（設定で「予定を含める」ならその期間の予定も加える）。to は含まない */
+const includePlanned = () => !!(S.settings && S.settings.includePlanned);
+function dataIn(from, toEx) {
+  const real = S.entries.filter((e) => { const d = dt(e); return d >= from && d < toEx; });
+  return includePlanned() ? real.concat(plannedEntries(from, addDays(toEx, -1), true)) : real;
+}
+const dataYM = (ym) => dataIn(YM.start(ym), YM.end(ym));
+const dataYear = (y) => dataIn(new Date(y, 0, 1), new Date(y + 1, 0, 1));
 function nextOccurrence(r) {
   const now = new Date();
   const far = new Date(now.getFullYear() + 3, now.getMonth(), now.getDate());
@@ -414,7 +439,7 @@ function monthSums(endYM, count) {
   const out = [];
   for (let i = count - 1; i >= 0; i--) {
     const m = YM.add(endYM, -i);
-    const l = inYM(S.entries, m);
+    const l = dataYM(m);
     const inc = total(l, 'income'), exp = total(l, 'expense');
     out.push({ ym: m, inc, exp, net: inc - exp, label: m.y === new Date().getFullYear() ? m.m + '月' : `${String(m.y).slice(2)}/${m.m}` });
   }
@@ -422,7 +447,7 @@ function monthSums(endYM, count) {
 }
 function dailyCum(ym, fn, days) {
   const daily = new Array(YM.days(ym) + 1).fill(0);
-  for (const e of inYM(S.entries, ym)) daily[dt(e).getDate()] += fn(e);
+  for (const e of dataYM(ym)) daily[dt(e).getDate()] += fn(e);
   const out = [];
   let run = 0;
   for (let d = 1; d <= Math.max(1, Math.min(days, YM.days(ym))); d++) { run += daily[d]; out.push(run); }
@@ -435,7 +460,7 @@ const U = {
   tab: 'home',
   homeYM: YM.now(),
   hist: { view: 'list', period: 'month', from: ymd(YM.start(YM.now())), to: ymd(today0), asc: false, calYM: YM.now(), selDay: ymd(today0) },
-  ana: { ym: YM.now(), tab: 'bal', monthSel: null, netMode: 'month', netYear: today0.getFullYear(), netSel: null, pace: {} },
+  ana: { mode: 'month', ym: YM.now(), year: today0.getFullYear(), ySel: null, tab: 'bal', monthSel: null, netMode: 'month', netYear: today0.getFullYear(), netSel: null, pace: {} },
   ov: [] // 重なって表示している画面（記録・シートなど）
 };
 const top = () => U.ov[U.ov.length - 1];
@@ -531,7 +556,7 @@ const empty = (title, msg, extra = '') => `<div class="empty">${ic('clip', 28, 1
 
 function entryRow(e, showDate = true) {
   const d = dt(e);
-  return `<button class="row${e.planned ? ' plan' : ''}" data-a="${e.planned ? 'plan-open' : 'edit'}" data-id="${e.planned ? e.ruleId : e.id}">
+  return `<button class="row${e.planned ? ' plan' : ''}" data-a="${e.planned ? 'plan-edit' : 'edit'}" data-id="${e.planned ? e.ruleId : e.id}"${e.planned ? ` data-key="${e.occKey}"` : ''}>
     ${badge(e.cat, e.color)}
     <span class="main"><span class="t">${e.planned ? '<span class="tag-plan">予定</span>' : ''}${esc(entryTitle(e))}${e.ruleId ? `<span class="rep" aria-label="繰り返し">↻</span>` : ''}</span>
     <span class="s">${esc(e.cat)}${showDate ? ' · ' + md(d) : ''} ${hm(d)}</span></span>
@@ -600,7 +625,7 @@ function bars({ labels, series, h = 160, sel = -1, action = '', topLabel = null,
 }
 
 /** 折れ線（日ごとの累計）。タップした位置の日を選択 */
-function lines({ series, xMax = 31, h = 170, sel = 1, key, signedAxis = false, aria = '' }) {
+function lines({ series, xMax = 31, h = 170, sel = 1, key, signedAxis = false, aria = '', xTicks = [1, 10, 20, 31], xUnit = '日' }) {
   const W = 320, padL = 38, padT = 10, padB = 20, plotH = h - padT - padB;
   const all = series.flatMap((s) => s.values);
   const max = niceMax(Math.max(0, ...all)), min = -niceMax(Math.max(0, ...all.map((v) => -v)));
@@ -613,7 +638,7 @@ function lines({ series, xMax = 31, h = 170, sel = 1, key, signedAxis = false, a
     g += `<line x1="${padL}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="${t === 0 ? '#4A4A50' : '#232327'}" stroke-width="1"/>`;
     g += `<text x="${padL - 5}" y="${y(t) + 3}" text-anchor="end" font-size="9" fill="#8C877F">${esc(short(t, signedAxis && t !== 0))}</text>`;
   }
-  for (const d of [1, 10, 20, 31]) g += `<text x="${x(d)}" y="${h - 5}" text-anchor="middle" font-size="10" fill="#A8A399">${d}日</text>`;
+  for (const d of xTicks) g += `<text x="${x(d)}" y="${h - 5}" text-anchor="middle" font-size="10" fill="#A8A399">${d}${xUnit}</text>`;
   series.slice().reverse().forEach((s) => {
     if (!s.values.length) return;
     const pts = s.values.map((v, i) => `${x(i + 1).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
@@ -658,26 +683,28 @@ function vTabbar() {
 function vHome() {
   const ym = U.homeYM;
   const list = inYM(S.entries, ym).sort((a, b) => dt(b) - dt(a));
-  const inc = total(list, 'income'), exp = total(list, 'expense');
+  const data = dataYM(ym);
+  const hasPlan = data.some((e) => e.planned);
+  const inc = total(data, 'income'), exp = total(data, 'expense');
   const endDay = YM.eq(ym, YM.now()) ? new Date().getDate() : YM.days(ym);
   let body;
-  if (!list.length) {
+  if (!data.length) {
     body = `<section class="card tight">${empty(`${YM.label(ym)}の記録はまだありません`, '下の＋ボタンから、最初の収入・支出を記録しましょう。',
       `<button class="btn-gold" data-a="new-entry" style="margin-top:8px">${ic('plus', 18, 2.2)}記録する</button>`)}</section>`;
   } else {
-    const cats = groupBy(list, 'expense', 'cat').slice(0, 3);
+    const cats = groupBy(data, 'expense', 'cat').slice(0, 3);
     body = (cats.length ? `<section style="display:flex;flex-direction:column;gap:14px" aria-label="支出の多いカテゴリ">
       <h2 class="big">支出の多いカテゴリ</h2>
       ${cats.map((c) => `<div style="display:flex;flex-direction:column;gap:7px">
         <div style="display:flex;justify-content:space-between;font-size:13px"><span class="legend"><i class="dot" style="background:${c.color}"></i>${esc(c.name)}</span><span class="sub num">${yen(c.v)}（${pct(c.v / exp)}）</span></div>
         <div class="bar"><i style="width:${Math.max(2, c.v / exp * 100)}%;background:${c.color}"></i></div></div>`).join('')}
     </section>` : '') +
-    `<section aria-label="最近の記録"><h2 class="big" style="margin-bottom:4px">最近の記録</h2>${list.slice(0, 5).map((e) => entryRow(e)).join('')}
+    `<section aria-label="最近の記録"><h2 class="big" style="margin-bottom:4px">最近の記録</h2>${list.length ? list.slice(0, 5).map((e) => entryRow(e)).join('') : '<p class="hint">この月の記録はまだありません（予定のみ）</p>'}
       ${list.length > 5 ? `<button class="link" data-a="tab" data-v="history" style="margin-top:6px">履歴をすべて見る ${ic('chevR', 14)}</button>` : ''}</section>`;
   }
   return `<div class="screen"><div class="scroll" data-scroll="home"><div class="pad">
     ${monthSel(ym, 'home')}
-    ${balanceCard(inc, exp, `${ym.m}月の収入と支出`, `${ym.m}/1–${ym.m}/${endDay}`, 'balance')}
+    ${balanceCard(inc, exp, `${ym.m}月の収入と支出`, hasPlan ? `予定を含む` : `${ym.m}/1–${ym.m}/${endDay}`, 'balance')}
     ${body}
   </div></div></div>`;
 }
@@ -736,7 +763,7 @@ function vHistList() {
         <div class="tot">${inc ? `<span>収入 <span class="income">${yen(inc)}</span></span>` : ''}${exp ? `<span>支出 <span class="expense">${yen(exp)}</span></span>` : ''}${!real.length ? `<span class="sub" style="font-weight:500">予定${pInc ? ` 収入 ${yen(pInc)}` : ''}${pExp ? ` 支出 ${yen(pExp)}` : ''}</span>` : ''}</div>
         <button class="plus" data-a="new-on" data-d="${k}" aria-label="${md(d)}に記録を追加">${ic('plus', 20)}</button>
       </div>
-      ${list.map((e) => `<button class="titem${e.planned ? ' plan' : ''}" data-a="${e.planned ? 'plan-open' : 'edit'}" data-id="${e.planned ? e.ruleId : e.id}">
+      ${list.map((e) => `<button class="titem${e.planned ? ' plan' : ''}" data-a="${e.planned ? 'plan-edit' : 'edit'}" data-id="${e.planned ? e.ruleId : e.id}"${e.planned ? ` data-key="${e.occKey}"` : ''}>
         <span class="ic"><i style="background:${e.color}">${esc(e.cat.slice(0, 1))}</i></span>
         <span class="box"><span class="top"><b style="color:${e.kind === 'income' ? INCOME : 'var(--text)'}">${e.kind === 'income' ? '+' : ''}${yen(e.amount)}</b><small>${e.planned ? '<span class="tag-plan">予定</span>' : ''}${e.ruleId ? '↻ ' : ''}${hm(dt(e))}</small></span>
         <span class="c">${esc(e.cat)}（${esc(e.genre)}）</span>
@@ -755,6 +782,11 @@ function vHistList() {
     <div class="scroll" data-scroll="hlist"><div class="timeline">${tl}</div></div>`;
 }
 
+const calNum = (v, cls) => {
+  if (!v) return `<span class="n ${cls}">&nbsp;</span>`;
+  const t = String(Math.round(v)); // 省略せずにすべての桁を表示
+  return `<span class="n ${cls}${t.length >= 8 ? ' xlong' : t.length >= 6 ? ' long' : ''}">${t}</span>`;
+};
 function vHistCal() {
   const h = U.hist, ym = h.calYM;
   const list = inYM(S.entries, ym);
@@ -775,7 +807,7 @@ function vHistCal() {
     const cls = [k === h.selDay ? 'sel' : '', k === todayK ? 'today' : '', date > now ? 'fut' : '', w === 0 ? 'sun' : w === 6 ? 'sat' : '', isPlan ? 'plan' : ''].join(' ');
     const label = `${ym.m}月${d}日${iv ? ` 収入 ${yen(iv)}` : ''}${ev ? ` 支出 ${yen(ev)}` : ''}${isPlan ? '（予定）' : ''}`;
     cells += `<button class="${cls}" data-a="cal-day" data-d="${k}" aria-label="${label}">
-      <span class="d">${d}</span><span class="n in">${iv ? short(iv) : '&nbsp;'}</span><span class="n ex">${ev ? short(ev) : '&nbsp;'}</span></button>`;
+      <span class="d">${d}</span>${calNum(iv, 'in')}${calNum(ev, 'ex')}</button>`;
   }
   const sel = parse(h.selDay);
   const dayList = S.entries.filter((e) => ymd(dt(e)) === h.selDay)
@@ -802,24 +834,41 @@ function vHistCal() {
 // ===================== 分析 =====================
 function vAnalysis() {
   const a = U.ana;
+  const yearMode = a.mode === 'year';
   let content;
-  if (!S.entries.length) {
+  if (!S.entries.length && !S.rules.length) {
     content = `<section class="card tight">${empty('まだ分析できる記録がありません', '収入や支出を記録すると、ここにグラフや傾向が表示されます。')}</section>`;
+  } else if (yearMode) {
+    content = a.tab === 'bal' ? yBalance() : a.tab === 'exp' ? yKind('expense') : a.tab === 'inc' ? yKind('income') : yTrend();
   } else {
     content = a.tab === 'bal' ? anaBalance() : a.tab === 'exp' ? anaKind('expense') : a.tab === 'inc' ? anaKind('income') : anaTrend();
   }
+  if (includePlanned()) content = `<p class="note" style="margin-bottom:-4px">※ 設定により、予定（まだ来ていない繰り返し入力）も集計に含めています。</p>` + content;
   return `<div class="screen"><div class="title-bar">分析</div>
     <div style="padding:0 20px;display:flex;flex-direction:column;gap:8px;flex-shrink:0">
-      <div style="display:flex;justify-content:center">${monthSel(a.ym, 'ana')}</div>
+      ${seg([['month', '月ごと'], ['year', '年ごと']], yearMode ? 'year' : 'month', 'ana-mode', 'small')}
+      <div style="display:flex;justify-content:center">${yearMode ? yearSel(a.year) : monthSel(a.ym, 'ana')}</div>
       ${seg([['bal', '収支'], ['exp', '支出'], ['inc', '収入'], ['trend', '推移']], a.tab, 'ana-tab', 'small')}
     </div>
-    <div class="scroll swipe-area" data-scroll="ana-${a.tab}"><div class="pad" style="padding-top:14px;gap:14px">${content}</div></div></div>`;
+    <div class="scroll swipe-area" data-scroll="ana-${a.mode || 'month'}-${a.tab}"><div class="pad" style="padding-top:14px;gap:14px">${content}</div></div></div>`;
+}
+function yearSel(y) {
+  const years = yearsList();
+  if (!years.includes(y)) { years.push(y); years.sort((a, b) => b - a); }
+  const cur = new Date().getFullYear();
+  return `<div class="month-sel">
+    <button class="arrow" data-a="y-prev" aria-label="前の年">${ic('chevL', 18)}</button>
+    <label class="year-pick"><span class="sr">表示する年</span>
+      <select data-f="ana-year">${years.map((v) => `<option value="${v}"${v === y ? ' selected' : ''}>${v}年</option>`).join('')}</select>${ic('chevD', 12, 2.6)}</label>
+    <span class="mlabel" style="min-width:auto;font-size:18px">の1年</span>
+    <button class="arrow" data-a="y-next" aria-label="次の年"${y >= cur ? ' disabled' : ''}>${ic('chevR', 18)}</button>
+  </div>`;
 }
 const card = (inner, label = '') => `<section class="card" ${label ? `aria-label="${esc(label)}"` : ''} style="display:flex;flex-direction:column;gap:14px">${inner}</section>`;
 
 function anaBalance() {
   const ym = U.ana.ym;
-  const list = inYM(S.entries, ym), prev = inYM(S.entries, YM.add(ym, -1));
+  const list = dataYM(ym), prev = dataYM(YM.add(ym, -1));
   const inc = total(list, 'income'), exp = total(list, 'expense'), prevExp = total(prev, 'expense');
   const fixed = sum(list, (e) => (e.kind === 'expense' && e.ruleId ? e.amount : 0));
   const variable = exp - fixed;
@@ -851,7 +900,7 @@ function anaBalance() {
 
 function anaKind(kind) {
   const ym = U.ana.ym, kl = kindLabel(kind);
-  const list = inYM(S.entries, ym), prev = inYM(S.entries, YM.add(ym, -1));
+  const list = dataYM(ym), prev = dataYM(YM.add(ym, -1));
   const tot = total(list, kind);
   const genres = fold(groupBy(list, kind, 'genre'));
   const cats = groupBy(list, kind, 'cat');
@@ -880,7 +929,7 @@ function anaKind(kind) {
       ${topV > 0 ? `<p class="hint">${WD[topI]}曜日の平均が最も高く、${yen(topV)}です。</p>` : ''}`, '曜日別の平均支出');
     const top5 = list.filter((e) => e.kind === 'expense').sort((a, b) => b.amount - a.amount).slice(0, 5);
     html += card(`${secTitle('大きな支出 TOP5', `${ym.m}月`)}
-      ${top5.length ? top5.map((e, i) => `<button class="row" data-a="edit" data-id="${e.id}" style="border:0;padding:4px 0;gap:12px"><span class="serif muted" style="width:16px;font-size:13px">${i + 1}</span>${badge(e.cat, e.color, 32)}
+      ${top5.length ? top5.map((e, i) => `<button class="row" ${e.planned ? `data-a="plan-edit" data-id="${e.ruleId}" data-key="${e.occKey}"` : `data-a="edit" data-id="${e.id}"`} style="border:0;padding:4px 0;gap:12px"><span class="serif muted" style="width:16px;font-size:13px">${i + 1}</span>${badge(e.cat, e.color, 32)}
         <span class="main"><span class="t" style="font-size:14px">${esc(entryTitle(e))}</span><span class="s" style="font-size:11px">${esc(e.cat)} · ${md(dt(e))}</span></span><span class="amt expense" style="font-size:14px">−${yen(e.amount)}</span></button>`).join('') : '<p class="hint">この月の支出はありません</p>'}`, '大きな支出');
   } else {
     const months = monthSums(ym, 6);
@@ -899,12 +948,12 @@ function anaTrend() {
     const first = firstYM(), now = YM.now();
     let run = 0, m = first;
     const yStart = { y: a.netYear, m: 1 };
-    while (YM.cmp(m, yStart) < 0) { const l = inYM(S.entries, m); run += total(l, 'income') - total(l, 'expense'); m = YM.add(m, 1); }
+    while (YM.cmp(m, yStart) < 0) { const l = dataYM(m); run += total(l, 'income') - total(l, 'expense'); m = YM.add(m, 1); }
     const carried = run;
     for (let mo = 1; mo <= 12; mo++) {
       const cur = { y: a.netYear, m: mo };
       if (YM.cmp(cur, now) > 0) break;
-      const l = inYM(S.entries, cur);
+      const l = dataYM(cur);
       run += total(l, 'income') - total(l, 'expense');
       if (YM.cmp(cur, first) >= 0) pts.push({ label: mo + '月', v: run });
     }
@@ -965,6 +1014,136 @@ function anaTrend() {
   return html;
 }
 
+
+// ===================== 分析（年ごと） =====================
+function yearMonths(y) {
+  const out = [];
+  for (let m = 1; m <= 12; m++) {
+    const ym = { y, m };
+    const l = dataYM(ym);
+    const inc = total(l, 'income'), exp = total(l, 'expense');
+    out.push({ ym, m, inc, exp, net: inc - exp, label: m + '月', future: YM.cmp(ym, YM.now()) > 0 });
+  }
+  return out;
+}
+const monthsElapsed = (y) => { const n = new Date(); return y < n.getFullYear() ? 12 : y > n.getFullYear() ? 0 : n.getMonth() + 1; };
+const vsPrev = (cur, prev, label) => (prev > 0 ? `${label} ${cur >= prev ? '+' : '−'}${pct(Math.abs(cur - prev) / prev)}` : `${label}の記録なし`);
+
+function yBalance() {
+  const y = U.ana.year;
+  const list = dataYear(y), prev = dataYear(y - 1);
+  const inc = total(list, 'income'), exp = total(list, 'expense');
+  const pInc = total(prev, 'income'), pExp = total(prev, 'expense');
+  const fixed = sum(list, (e) => (e.kind === 'expense' && e.ruleId ? e.amount : 0));
+  const variable = exp - fixed;
+  const n = Math.max(1, monthsElapsed(y));
+  const months = yearMonths(y);
+  const si = U.ana.ySel ?? Math.max(0, n - 1);
+  const s = months[si];
+  const r = exp > 0 ? fixed / exp : 0;
+  const best = months.slice(0, n).reduce((a, m) => (m.net > a.net ? m : a), months[0]);
+  return balanceCard(inc, exp, '収入と支出の割合', `${y}年`, 'rate') +
+    `<div class="tiles">
+      ${tile('月平均の支出', yen(Math.round(exp / n)), `${n}か月の平均`)}
+      ${tile('月平均の収入', yen(Math.round(inc / n)), `${n}か月の平均`)}
+      ${tile('支出の前年比', pExp > 0 ? (exp >= pExp ? '+' : '−') + pct(Math.abs(exp - pExp) / pExp) : '—', pExp > 0 ? `${y - 1}年 ${yen(pExp)}` : `${y - 1}年の記録なし`)}
+      ${tile('貯蓄できた額', syen(inc - exp), vsPrev(inc - exp, pInc - pExp, '前年比'), inc - exp >= 0 ? INCOME : EXPENSE)}
+    </div>` +
+    card(`${secTitle('月別の収支', `${y}年 · タップで詳細`)}
+      <div style="display:flex;gap:14px"><span class="legend"><i class="dot" style="background:${INCOME}"></i>収入</span><span class="legend"><i class="dot" style="background:${EXPENSE}"></i>支出</span></div>
+      ${bars({ labels: months.map((m) => String(m.m)), series: [{ color: INCOME, values: months.map((m) => m.inc) }, { color: EXPENSE, values: months.map((m) => m.exp) }], h: 170, sel: si, action: 'y-month', aria: `${y}年の月別の収入と支出` })}
+      ${readout([[`${s.m}月の収入`, yen(s.inc)], ['支出', yen(s.exp)], ['収支', syen(s.net), s.net >= 0 ? INCOME : EXPENSE]])}
+      ${best && best.net > 0 ? `<p class="hint">いちばん多く残せたのは ${best.m}月（${syen(best.net)}）です。</p>` : ''}`, '月別の収支') +
+    card(`${secTitle('固定費と変動費', `${y}年`)}
+      <div style="display:flex;height:14px;gap:2px">${fixed > 0 ? `<i style="width:${r * 100}%;background:#3987e5;border-radius:4px"></i>` : ''}<i style="flex:1;background:${exp > 0 && variable > 0 ? '#d95926' : 'var(--divider)'};border-radius:4px"></i></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        ${[['固定費', '#3987e5', fixed, '繰り返し入力の支出'], ['変動費', '#d95926', variable, 'それ以外の支出']].map(([l, c, v, nn]) =>
+          `<div style="display:flex;flex-direction:column;gap:3px"><span class="legend"><i class="dot" style="background:${c}"></i>${l} ${exp > 0 ? pct(v / exp) : '—'}</span><b class="serif" style="font-size:16px">${yen(v)}</b><span class="note">${nn}</span></div>`).join('')}
+      </div>`, '固定費と変動費');
+}
+
+function yKind(kind) {
+  const y = U.ana.year, kl = kindLabel(kind);
+  const list = dataYear(y), prev = dataYear(y - 1);
+  const tot = total(list, kind), pTot = total(prev, kind);
+  const genres = fold(groupBy(list, kind, 'genre'));
+  const cats = groupBy(list, kind, 'cat');
+  const prevMap = new Map(groupBy(prev, kind, 'cat').map((c) => [c.name, c.v]));
+  const maxV = cats.length ? cats[0].v : 1;
+  const months = yearMonths(y);
+  const vals = months.map((m) => (kind === 'expense' ? m.exp : m.inc));
+  const n = Math.max(1, monthsElapsed(y));
+  const topM = vals.slice(0, n).reduce((bi, v, i, arr) => (v > arr[bi] ? i : bi), 0);
+  let html = '';
+  if (cats.length) {
+    const c0 = cats[0];
+    html += `<section class="card" style="display:flex;align-items:center;gap:14px;border-color:#6B5B3E">
+      ${badge(c0.name, c0.color, 48)}
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
+        <span class="hint">${y}年でいちばん${kind === 'expense' ? '支出' : '収入'}が多かったカテゴリ</span>
+        <b class="serif" style="font-size:19px">${esc(c0.name)}</b>
+        <span class="sub" style="font-size:12px">${yen(c0.v)}（${kl}全体の${pct(c0.v / tot)}）</span>
+      </div></section>`;
+  }
+  html += card(`${secTitle(`ジャンル別の${kl}`, `${y}年`)}
+    ${tot === 0 ? `<p class="hint" style="text-align:center;padding:24px 0">この年の${kl}はありません</p>` : `
+      <div style="display:flex;justify-content:center"><div class="donut" style="width:190px;height:190px" role="img" aria-label="ジャンル別${kl}：${esc(genres.map((g) => g.name + ' ' + pct(g.v / tot)).join('、'))}">${donut(genres, 190, 26)}
+        <div class="center"><span>${y}年の${kl}</span><b style="font-size:19px">${yen(tot)}</b><span>${vsPrev(tot, pTot, '前年比')}</span></div></div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 18px">${genres.map((g) => `<div class="legend" style="min-width:0"><i class="dot" style="background:${g.color}"></i><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(g.name)}</span><span class="sub num">${pct(g.v / tot)}</span></div>`).join('')}</div>`}`, `ジャンル別の${kl}`);
+  html += card(`${secTitle(`月別の${kl}の推移`, `${y}年`)}
+    ${bars({ labels: months.map((m) => String(m.m)), series: [{ color: (v, i) => (i === topM && v > 0 ? GOLD : (kind === 'expense' ? EXPENSE : INCOME)), values: vals }], h: 170,
+      topLabel: (i) => (i === topM && vals[i] ? short(vals[i]) : ''), aria: `${y}年の月別の${kl}` })}
+    ${vals[topM] > 0 ? `<p class="hint">${kl}がいちばん多かったのは ${topM + 1}月（${yen(vals[topM])}）。月平均は ${yen(Math.round(tot / n))} です。</p>` : ''}`, `月別の${kl}`);
+  if (cats.length) {
+    html += card(`${secTitle('カテゴリ別ランキング（前年との比較）', `${y - 1}年 → ${y}年`)}
+      ${cats.slice(0, 15).map((c, i) => { const d = c.v - (prevMap.get(c.name) || 0); return `<div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:baseline;gap:8px;font-size:13px"><span class="serif muted" style="width:18px;font-size:12px">${i + 1}</span><i class="dot" style="background:${c.color};align-self:center"></i><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.name)}</span><b class="serif num">${yen(c.v)}</b><span class="sub num" style="width:84px;text-align:right;font-size:11px">${d === 0 ? '±0' : (d > 0 ? '▲ ' : '▼ ') + yen(Math.abs(d))}</span></div>
+        <div class="bar" style="height:6px;margin-left:26px"><i style="width:${Math.max(2, c.v / maxV * 100)}%;background:${c.color}"></i></div></div>`; }).join('')}
+      ${cats.length > 15 ? `<p class="note">ほか ${cats.length - 15} カテゴリ</p>` : ''}`, 'カテゴリ別ランキング');
+  }
+  if (kind === 'expense') {
+    const top5 = list.filter((e) => e.kind === 'expense').sort((a, b) => b.amount - a.amount).slice(0, 5);
+    html += card(`${secTitle('大きな支出 TOP5', `${y}年`)}
+      ${top5.length ? top5.map((e, i) => `<button class="row" ${e.planned ? `data-a="plan-edit" data-id="${e.ruleId}" data-key="${e.occKey}"` : `data-a="edit" data-id="${e.id}"`} style="border:0;padding:4px 0;gap:12px"><span class="serif muted" style="width:16px;font-size:13px">${i + 1}</span>${badge(e.cat, e.color, 32)}
+        <span class="main"><span class="t" style="font-size:14px">${esc(entryTitle(e))}</span><span class="s" style="font-size:11px">${esc(e.cat)} · ${md(dt(e))}</span></span><span class="amt expense" style="font-size:14px">−${yen(e.amount)}</span></button>`).join('') : '<p class="hint">この年の支出はありません</p>'}`, '大きな支出');
+  }
+  return html;
+}
+
+function yTrend() {
+  const y = U.ana.year, a = U.ana;
+  const months = yearMonths(y), pm = yearMonths(y - 1);
+  const n = monthsElapsed(y);
+  const cut = (arr) => (y === new Date().getFullYear() ? arr.slice(0, Math.max(1, n)) : arr);
+  const cum = (arr) => { let r = 0; return arr.map((v) => (r += v)); };
+  let html = card(`${secTitle('収支の推移', `${y}年`)}
+    ${bars({ labels: months.map((m) => String(m.m)), series: [{ color: (v) => (v >= 0 ? INCOME : EXPENSE), values: cut(months.map((m) => m.net)).concat(new Array(12 - cut(months).length).fill(null)) }], h: 170,
+      aria: `${y}年の月別の収支` })}
+    ${readout([['年間の収支', syen(sum(cut(months), (m) => m.net)), sum(cut(months), (m) => m.net) >= 0 ? INCOME : EXPENSE], ['月平均', syen(Math.round(sum(cut(months), (m) => m.net) / Math.max(1, cut(months).length)))], ['前年', syen(sum(pm, (m) => m.net)), sum(pm, (m) => m.net) >= 0 ? INCOME : EXPENSE]])}`, '収支の推移');
+  const pace = (key, ttl, note, fnm, signedAxis) => {
+    const cur = cum(cut(months).map(fnm)), prv = cum(pm.map(fnm));
+    const m = clamp(a.pace[key] || cur.length, 1, 12);
+    const cv = cur[m - 1], pv = prv[m - 1];
+    const f = signedAxis ? syen : yen;
+    const col = (v) => (v == null ? 'var(--sub)' : signedAxis ? (v >= 0 ? INCOME : EXPENSE) : 'var(--text)');
+    return card(`${secTitle(ttl, `${y - 1}年と比較`)}
+      <p class="hint" style="margin-top:-6px">${note}</p>
+      <div style="display:flex;gap:14px"><span class="legend"><i class="dot" style="background:${GOLD}"></i>${y}年</span><span class="legend"><i class="dot" style="background:#6E6A64"></i>${y - 1}年</span></div>
+      ${lines({ series: [{ color: GOLD, values: cur }, { color: '#6E6A64', values: prv }], xMax: 12, xTicks: [1, 3, 6, 9, 12], xUnit: '月', sel: m, key, signedAxis, aria: `${ttl}。${m}月時点で${y}年 ${cv == null ? 'データなし' : f(cv)}、${y - 1}年 ${pv == null ? 'データなし' : f(pv)}` })}
+      <label class="hint" style="display:flex;flex-direction:column;gap:2px">月を動かして比較（${m}月時点）
+        <input class="range" type="range" min="1" max="12" value="${m}" data-f="pace" data-k="${key}"></label>
+      ${readout([[`${y}年`, cv == null ? '—' : f(cv), col(cv)], [`${y - 1}年`, pv == null ? '—' : f(pv), col(pv)], ['差', cv != null && pv != null ? syen(cv - pv) : '—']])}`, ttl);
+  };
+  html += pace('y-exp', '支出の累計（年間）', '1月からの支出の積み上げ', (m) => m.exp, false);
+  html += pace('y-net', '収支の累計（年間）', '1月からの収入 − 支出の積み上げ', (m) => m.net, true);
+  const rates = months.map((m) => (m.inc > 0 ? Math.round(m.net / m.inc * 1000) / 10 : 0));
+  html += card(`${secTitle('貯蓄率の推移', `${y}年`)}
+    ${bars({ labels: months.map((m) => String(m.m)), series: [{ color: (v, i) => (i === n - 1 && y === new Date().getFullYear() ? GOLD : '#4A463F'), values: rates }], h: 150, yFmt: (v) => Math.round(v) + '%',
+      topLabel: (i) => (months[i].inc > 0 && (i === n - 1 || i === 11) ? Math.round(rates[i]) + '%' : ''), aria: `${y}年の貯蓄率の推移` })}
+    <p class="note">${months.filter((m) => m.inc > 0).length ? `年間の貯蓄率：${pct(sum(months, (m) => m.net) / Math.max(1, sum(months, (m) => m.inc)))}` : '収入の記録がある月だけ表示します。'}</p>`, '貯蓄率の推移');
+  return html;
+}
+
 // ===================== 設定 =====================
 function vSettings() {
   const rules = S.rules.slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
@@ -992,6 +1171,7 @@ function vSettings() {
       <h2 class="big" style="font-size:15px">一般</h2>
       <div class="list-card">
         <button class="item" data-a="catman-open"><span class="ico">${ic('grid', 15)}</span><span class="grow">カテゴリの管理</span><span class="v">★ ${favN}件</span>${ic('chevR', 14)}</button>
+        <div class="item" style="gap:12px"><span class="ico">${ic('cal', 15)}</span><span class="grow" style="white-space:normal">予定を集計に含める<br><span class="note">ホームと分析の金額に、まだ来ていない繰り返し入力の予定も含めます</span></span>${switchBtn(includePlanned(), 'set-plan', '', '予定を集計に含める', true)}</div>
         <button class="item" data-a="export-csv"><span class="ico">${ic('down', 15)}</span><span class="grow">データの書き出し（CSV）</span><span class="v">${S.entries.length}件</span></button>
         <button class="item" data-a="export-json"><span class="ico">${ic('shield', 15)}</span><span class="grow">バックアップを保存</span><span class="v">復元用</span></button>
         <button class="item" data-a="import-json"><span class="ico">${ic('up', 15)}</span><span class="grow">バックアップから復元</span></button>
@@ -1019,6 +1199,18 @@ function editEditor(e) {
   if (c) o.sel[e.kind] = c.id;
   return o;
 }
+/** 予定（まだ来ていない繰り返し）の「その日だけ」を編集する */
+function planEditor(rule, key) {
+  const st = parse(rule.start);
+  const ov = (rule.overrides && rule.overrides[key]) || {};
+  const base = { date: `${key}T${pad(st.getHours())}:${pad(st.getMinutes())}`, amount: rule.amount, kind: rule.kind, cat: rule.cat, memo: rule.memo };
+  const v = Object.assign(base, ov);
+  const o = { type: 'editor', mode: 'plan', ruleId: rule.id, key, edited: !!rule.overrides?.[key], kind: v.kind, digits: String(v.amount), sel: {}, date: v.date, memo: v.memo || '', rep: defaultRep(v.date) };
+  const c = findCatByName(v.kind, v.cat);
+  if (c) o.sel[v.kind] = c.id;
+  ensureSel(o);
+  return o;
+}
 function ensureSel(o) {
   const cur = o.sel[o.kind] && catById(o.sel[o.kind]);
   if (cur && genreById(cur.genreId) && genreById(cur.genreId).kind === o.kind) return;
@@ -1026,7 +1218,13 @@ function ensureSel(o) {
   o.sel[o.kind] = f ? f.id : null;
 }
 function vEditor(o) {
-  const isNew = o.mode === 'new';
+  const isNew = o.mode === 'new', isPlan = o.mode === 'plan';
+  const srcEntry = o.mode === 'edit' ? S.entries.find((x) => x.id === o.id) : null;
+  const pd = isPlan ? parse(o.key) : null;
+  const note = isPlan
+    ? `<div class="note-box">${ic('repeat', 13)} <b>${pd.getMonth() + 1}/${pd.getDate()}の予定だけ</b>を変更します。繰り返しの設定（ほかの日）はそのままです。
+        <div style="display:flex;gap:14px;margin-top:6px;flex-wrap:wrap"><button class="link" data-a="rule-open" data-id="${o.ruleId}">繰り返し全体を編集 ${ic('chevR', 13)}</button>${o.edited ? `<button class="link" data-a="plan-reset">この日の変更を元に戻す</button>` : ''}</div></div>`
+    : srcEntry && srcEntry.ruleId ? `<div class="note-box">${ic('repeat', 13)} 繰り返し入力で作られた記録です。ここでの変更は<b>この記録だけ</b>に反映され、繰り返しの設定はそのままです。</div>` : '';
   const sel = o.sel[o.kind] ? catById(o.sel[o.kind]) : null;
   const favs = favCats(o.kind);
   const amount = Number(o.digits) || 0;
@@ -1040,13 +1238,15 @@ function vEditor(o) {
   if (sel && !sel.fav) tiles += tileHtml(sel, true, 'open-cats');
   tiles += `<button class="ctile all" data-a="open-cats" aria-label="すべてのカテゴリを開く">${ic('dots', 18, 2.4)}<span>すべて</span></button>`;
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', 'del'];
-  return `<div class="page${o.fresh ? ' anim' : ''}" role="dialog" aria-label="${isNew ? '記録する' : '記録を編集'}">
+  const ttl = isNew ? '記録する' : isPlan ? '予定を編集' : '記録を編集';
+  return `<div class="page${o.fresh ? ' anim' : ''}" role="dialog" aria-label="${ttl}">
     <div class="page-head">
       <button class="back" data-a="close">${ic('chevL', 18, 2)}${isNew ? 'ホーム' : '閉じる'}</button>
-      <span class="ttl">${isNew ? '記録する' : '記録を編集'}</span>
-      <span class="right">${isNew ? '' : `<button class="icon-btn expense" data-a="ed-del" aria-label="この記録を削除">${ic('trash', 19)}</button>`}</span>
+      <span class="ttl">${ttl}</span>
+      <span class="right">${isNew ? '' : `<button class="icon-btn expense" data-a="${isPlan ? 'plan-skip' : 'ed-del'}" aria-label="${isPlan ? 'この日の予定だけ削除' : 'この記録を削除'}">${ic('trash', 19)}</button>`}</span>
     </div>
     <div class="scroll" data-scroll="editor"><div class="editor-body">
+      ${note}
       ${seg([['expense', '支出', 'exp'], ['income', '収入', 'inc']], o.kind, 'ed-kind')}
       <div class="amount" aria-label="金額 ${yen(amount)}"><span>金額</span><div class="val" style="color:${kc}"><i>¥</i><b>${num(amount)}</b></div></div>
       <div style="display:flex;flex-direction:column;gap:6px">
@@ -1057,12 +1257,10 @@ function vEditor(o) {
       <div class="fields">
         <label class="field"><span>日時</span><input type="datetime-local" data-f="ed-date" value="${esc(o.date)}"></label>
         <label class="field"><span>メモ</span><input type="text" data-f="ed-memo" value="${esc(o.memo)}" placeholder="例：ランチ" enterkeyhint="done" maxlength="60"></label>
-        ${isNew ? `<button class="field" data-a="open-repeat"><span style="display:flex;align-items:center;gap:8px">${ic('repeat', 16)}繰り返し</span>
-          <span class="val${o.rep.on ? ' on' : ''}"><span>${o.rep.on ? esc(repSummary(o.rep, o.date)) : 'なし'}</span>${ic('chevR', 14)}</span></button>` : ''}
       </div>
     </div></div>
     <div class="keypad" role="group" aria-label="テンキー">${keys.map((k) => `<button data-a="key" data-k="${k}" aria-label="${k === 'del' ? '1文字削除' : k}">${k === 'del' ? ic('bs', 22, 1.6) : k}</button>`).join('')}</div>
-    <div class="save-wrap"><button class="btn-gold" data-a="ed-save"${canSave ? '' : ' disabled'}>${isNew ? '保存する' : '変更を保存'}</button></div>
+    <div class="save-wrap"><button class="btn-gold" data-a="ed-save"${canSave ? '' : ' disabled'}>${isNew ? '保存する' : isPlan ? 'この日だけ変更' : '変更を保存'}</button></div>
   </div>`;
 }
 function saveEditor(o) {
@@ -1071,7 +1269,14 @@ function saveEditor(o) {
   if (!c || amount <= 0) return;
   const info = catInfo(c);
   if (isNaN(parse(o.date))) o.date = toLocal(new Date());
-  if (o.mode === 'new') {
+  if (o.mode === 'plan') {
+    const r = S.rules.find((x) => x.id === o.ruleId);
+    if (r) {
+      r.overrides = r.overrides || {};
+      r.overrides[o.key] = { date: o.date, amount, kind: o.kind, cat: info.cat, genre: info.genre, color: info.color, memo: o.memo.trim() };
+    }
+    toast('この日の予定だけ変更しました');
+  } else if (o.mode === 'new') {
     if (o.rep.on) {
       const r = Object.assign({ id: uid(), memo: o.memo.trim(), kind: o.kind, amount, cat: info.cat, genre: info.genre, color: info.color,
         start: o.date, active: true, lastGen: null, genCount: 0, createdAt: toLocal(new Date()) }, repFields(o.rep));
@@ -1517,7 +1722,26 @@ function act(a, el, ev) {
 
     // --- 設定：繰り返し入力 ---
     case 'rule-new': return openOv(ruleEditor(null));
-    case 'plan-open': { const r = S.rules.find((x) => x.id === d.id); if (r) { toast('予定は繰り返し入力から変更できます'); openOv(ruleEditor(r)); } return; }
+    case 'plan-edit': { const r = S.rules.find((x) => x.id === d.id); if (r) openOv(planEditor(r, d.key)); return; }
+    case 'plan-skip': {
+      const r = S.rules.find((x) => x.id === o.ruleId);
+      if (r && confirm('この日の予定だけ削除しますか？\n（繰り返しの設定やほかの日はそのままです）')) {
+        r.overrides = r.overrides || {};
+        r.overrides[o.key] = { skip: true };
+        persist(); U.ov.pop(); toast('この日の予定を削除しました'); render();
+      }
+      return;
+    }
+    case 'plan-reset': {
+      const r = S.rules.find((x) => x.id === o.ruleId);
+      if (r && r.overrides) { delete r.overrides[o.key]; persist(); U.ov.pop(); toast('元の予定に戻しました'); render(); }
+      return;
+    }
+    case 'ana-mode': U.ana.mode = d.v; U.ana.pace = {}; return render();
+    case 'y-prev': U.ana.year--; U.ana.ySel = null; U.ana.pace = {}; return render();
+    case 'y-next': if (U.ana.year < new Date().getFullYear()) { U.ana.year++; U.ana.ySel = null; U.ana.pace = {}; } return render();
+    case 'y-month': U.ana.ySel = Number(d.i); return render();
+    case 'set-plan': S.settings = S.settings || {}; S.settings.includePlanned = !S.settings.includePlanned; persist(); render(); toast(S.settings.includePlanned ? '予定を集計に含めます' : '予定は集計に含めません'); return;
     case 'rule-open': { const r = S.rules.find((x) => x.id === d.id); if (r) openOv(ruleEditor(r)); return; }
     case 'rule-toggle': {
       const r = S.rules.find((x) => x.id === d.id); if (!r) return;
@@ -1601,6 +1825,7 @@ function field(f, el, evType) {
     case 'h-from': if (v) { U.hist.from = v; if (evType === 'change') render(); } return;
     case 'h-to': if (v) { U.hist.to = v; if (evType === 'change') render(); } return;
     case 'net-year': U.ana.netYear = Number(v); U.ana.netSel = null; return render();
+    case 'ana-year': U.ana.year = Number(v); U.ana.ySel = null; U.ana.pace = {}; return render();
     case 'pace': U.ana.pace[el.dataset.k] = Number(v); return render();
     case 'rule-amt': o.amount = v.replace(/[^0-9]/g, ''); if (evType === 'change') { el.value = o.amount; } return;
     case 'rule-cat': o.catId = v; return;
@@ -1650,6 +1875,7 @@ function importJSON(file) {
       if (!validState(st)) throw new Error('形式が違います');
       if (!confirm(`バックアップから復元しますか？\n記録 ${st.entries.length}件・繰り返し ${st.rules.length}件\n今のデータはすべて置き換わります。`)) return;
       S = st;
+      if (!S.settings) S.settings = { includePlanned: false };
       dateCache.clear();
       generateRecurring();
       persist(); U.ov = []; render();
@@ -1761,6 +1987,8 @@ document.addEventListener('keydown', (ev) => {
   }
   if (ev.key === 'Escape' && U.ov.length) closeTop();
 });
+// iPhoneでキーボードを閉じたあと、画面がずれたままにならないよう元の位置へ戻す
+document.addEventListener('focusout', () => { setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) window.scrollTo(0, 0); }, 50); });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { clearTimeout(saveTimer); writeState(); }
   else if (S && generateRecurring()) render();
@@ -1769,6 +1997,7 @@ document.addEventListener('visibilitychange', () => {
 async function start() {
   const saved = await loadState();
   S = validState(saved) ? saved : freshState();
+  if (!S.settings) S.settings = { includePlanned: false };
   if (!validState(saved)) await writeState();
   generateRecurring();
   render();
