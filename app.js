@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.3.0';
 
 // ===================== 小道具 =====================
 const $ = (s, r = document) => r.querySelector(s);
@@ -240,7 +240,7 @@ const HOLIDAY_LABEL = { none: 'そのまま', before: '前の平日', after: '�
 function defaultRep(dateStr) {
   const d = parse(dateStr);
   const end = new Date(d.getFullYear(), d.getMonth() + 6, d.getDate());
-  return { on: false, interval: 1, unit: 'month', weekdays: [d.getDay() + 1], monthDay: d.getDate(), monthEnd: false, end: 'none', endCount: 12, endDate: ymd(end), holiday: 'none' };
+  return { on: false, interval: 1, unit: 'month', weekdays: [d.getDay() + 1], monthDay: d.getDate(), monthEnd: false, end: 'none', endCount: 12, endDate: ymd(end), holiday: 'none', fromMode: 'start', fromDate: ymd(new Date()), ahead: 0 };
 }
 function everyText(r) {
   const n = r.interval;
@@ -262,7 +262,7 @@ function repSummary(r, startStr) {
   return s;
 }
 function repFields(r) {
-  return { interval: r.interval, unit: r.unit, weekdays: r.weekdays.slice(), monthDay: r.monthDay, monthEnd: r.monthEnd, end: r.end, endCount: r.endCount, endDate: r.endDate, holiday: r.unit === 'day' ? 'none' : (r.holiday || 'none') };
+  return { interval: r.interval, unit: r.unit, weekdays: r.weekdays.slice(), monthDay: r.monthDay, monthEnd: r.monthEnd, end: r.end, endCount: r.endCount, endDate: r.endDate, holiday: r.unit === 'day' ? 'none' : (r.holiday || 'none'), fromMode: r.fromMode || 'start', fromDate: r.fromDate || ymd(new Date()), ahead: Number(r.ahead) || 0 };
 }
 
 /** ルールの発生日時（開始日〜limit） */
@@ -329,8 +329,11 @@ function generateRecurring() {
   for (const r of S.rules) {
     if (!r.active) continue;
     const last = r.lastGen ? parse(r.lastGen) : null;
+    // 過去の分をどこから記録するか（開始日から／今日から／指定日から）
+    const floor = r.fromMode && r.fromMode !== 'start' && r.fromDate ? sod(parse(r.fromDate)) : null;
     for (const d of occurrences(r, now)) {
       if (last && d <= last) continue;
+      if (floor && d < floor) continue;
       S.entries.push({ id: uid(), date: toLocal(d), amount: r.amount, kind: r.kind, cat: r.cat, genre: r.genre, color: r.color, memo: r.memo, ruleId: r.id, createdAt: toLocal(new Date()) });
       r.lastGen = toLocal(d);
       r.genCount = (r.genCount || 0) + 1;
@@ -339,6 +342,24 @@ function generateRecurring() {
   }
   if (added) persist();
   return added;
+}
+
+/** 未来の予定（まだ記録されていない繰り返し）。保存はせず、表示にだけ使う */
+function maxAhead() { return Math.max(0, ...S.rules.filter((r) => r.active).map((r) => Number(r.ahead) || 0)); }
+function plannedEntries(from, to) {
+  const today = sod(new Date()), out = [];
+  for (const r of S.rules) {
+    const ahead = Number(r.ahead) || 0;
+    if (!r.active || ahead <= 0) continue;
+    const horizon = new Date(today.getFullYear(), today.getMonth() + ahead, today.getDate());
+    const lim = to && to < horizon ? to : horizon;
+    const last = r.lastGen ? parse(r.lastGen) : null;
+    for (const d of occurrences(r, lim)) {
+      if (sod(d) <= today || (last && d <= last) || (from && d < from)) continue;
+      out.push({ id: 'plan:' + r.id + ':' + toLocal(d), date: toLocal(d), amount: r.amount, kind: r.kind, cat: r.cat, genre: r.genre, color: r.color, memo: r.memo, ruleId: r.id, planned: true });
+    }
+  }
+  return out;
 }
 function nextOccurrence(r) {
   const now = new Date();
@@ -464,9 +485,11 @@ const ic = (name, size = 20, sw = 1.7, fill = 'none') =>
   `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${fill}" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name]}</svg>`;
 
 // ===================== 共通部品 =====================
+const latestYM = (key) => (key === 'cal' ? YM.add(YM.now(), maxAhead()) : YM.now());
 function monthSel(ym, key) {
-  const latest = YM.now();
+  const latest = latestYM(key);
   const years = yearsList();
+  for (let y = YM.now().y + 1; y <= latest.y; y++) if (!years.includes(y)) years.push(y);
   if (!years.includes(ym.y)) years.push(ym.y);
   years.sort((a, b) => b - a);
   const nextDis = YM.cmp(ym, latest) >= 0;
@@ -482,12 +505,12 @@ function monthSel(ym, key) {
 }
 function getYM(key) { return key === 'home' ? U.homeYM : key === 'cal' ? U.hist.calYM : U.ana.ym; }
 function setYM(key, v) {
-  const latest = YM.now();
+  const latest = latestYM(key);
   if (YM.cmp(v, latest) > 0) v = latest;
   if (key === 'home') U.homeYM = v;
   else if (key === 'cal') {
     U.hist.calYM = v;
-    U.hist.selDay = YM.eq(v, latest) ? ymd(new Date()) : ymd(YM.start(v));
+    U.hist.selDay = YM.eq(v, YM.now()) ? ymd(new Date()) : ymd(YM.start(v));
   } else { U.ana.ym = v; U.ana.monthSel = null; U.ana.netSel = null; U.ana.pace = {}; }
 }
 
@@ -508,9 +531,9 @@ const empty = (title, msg, extra = '') => `<div class="empty">${ic('clip', 28, 1
 
 function entryRow(e, showDate = true) {
   const d = dt(e);
-  return `<button class="row" data-a="edit" data-id="${e.id}">
+  return `<button class="row${e.planned ? ' plan' : ''}" data-a="${e.planned ? 'plan-open' : 'edit'}" data-id="${e.planned ? e.ruleId : e.id}">
     ${badge(e.cat, e.color)}
-    <span class="main"><span class="t">${esc(entryTitle(e))}${e.ruleId ? `<span class="rep" aria-label="繰り返し">↻</span>` : ''}</span>
+    <span class="main"><span class="t">${e.planned ? '<span class="tag-plan">予定</span>' : ''}${esc(entryTitle(e))}${e.ruleId ? `<span class="rep" aria-label="繰り返し">↻</span>` : ''}</span>
     <span class="s">${esc(e.cat)}${showDate ? ' · ' + md(d) : ''} ${hm(d)}</span></span>
     <span class="amt" style="color:${kindColor(e.kind)}">${e.kind === 'income' ? '+' : '−'}${yen(e.amount)}</span>
   </button>`;
@@ -666,11 +689,11 @@ const PERIODS = [
 function periodRange(p) {
   const t = sod(new Date());
   switch (p) {
-    case 'week': return [addDays(t, -t.getDay()), t];
-    case 'month': return [YM.start(YM.now()), t];
+    case 'week': return [addDays(t, -t.getDay()), addDays(t, 6 - t.getDay())];
+    case 'month': return [YM.start(YM.now()), addDays(YM.end(YM.now()), -1)];
     case 'last': { const lm = YM.add(YM.now(), -1); return [YM.start(lm), addDays(YM.end(lm), -1)]; }
     case '3m': return [addDays(new Date(t.getFullYear(), t.getMonth() - 3, t.getDate()), 1), t];
-    case 'year': return [new Date(t.getFullYear(), 0, 1), t];
+    case 'year': return [new Date(t.getFullYear(), 0, 1), new Date(t.getFullYear(), 11, 31)];
     case 'all': return [null, null];
     default: {
       let a = sod(parse(U.hist.from)), b = sod(parse(U.hist.to));
@@ -695,24 +718,27 @@ function vHistList() {
   const r = periodRange(h.period);
   const toEnd = r[1] ? addDays(r[1], 1) : null;
   const items = S.entries.filter((e) => { const d = dt(e); return (!r[0] || d >= r[0]) && (!toEnd || d < toEnd); });
+  const plans = plannedEntries(r[0], r[1]);
   const groups = new Map();
-  for (const e of items) { const k = ymd(dt(e)); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e); }
+  for (const e of items.concat(plans)) { const k = ymd(dt(e)); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e); }
   const days = [...groups.keys()].sort((a, b) => (h.asc ? (a < b ? -1 : 1) : (a < b ? 1 : -1)));
   const label = PERIODS.find((p) => p[0] === h.period)[1];
   let tl = days.map((k) => {
     const list = groups.get(k).sort((a, b) => (h.asc ? dt(a) - dt(b) : dt(b) - dt(a)));
     const d = parse(k), w = d.getDay();
-    const exp = total(list, 'expense'), inc = total(list, 'income');
-    return `<div class="day">
+    const real = list.filter((e) => !e.planned);
+    const exp = total(real, 'expense'), inc = total(real, 'income');
+    const pExp = total(list, 'expense') - exp, pInc = total(list, 'income') - inc;
+    return `<div class="day${real.length ? '' : ' future'}">
       <div class="day-h">
         <div class="date" style="color:${w === 0 ? 'var(--sun)' : w === 6 ? 'var(--sat)' : 'var(--text)'}"><span class="num">${md(d)}</span><small>(${WD[w]})</small></div>
         <div class="knot"><i></i></div>
-        <div class="tot">${exp ? `<span>支出 <span class="expense">${yen(exp)}</span></span>` : ''}${inc ? `<span>収入 <span class="income">${yen(inc)}</span></span>` : ''}</div>
+        <div class="tot">${inc ? `<span>収入 <span class="income">${yen(inc)}</span></span>` : ''}${exp ? `<span>支出 <span class="expense">${yen(exp)}</span></span>` : ''}${!real.length ? `<span class="sub" style="font-weight:500">予定${pInc ? ` 収入 ${yen(pInc)}` : ''}${pExp ? ` 支出 ${yen(pExp)}` : ''}</span>` : ''}</div>
         <button class="plus" data-a="new-on" data-d="${k}" aria-label="${md(d)}に記録を追加">${ic('plus', 20)}</button>
       </div>
-      ${list.map((e) => `<button class="titem" data-a="edit" data-id="${e.id}">
+      ${list.map((e) => `<button class="titem${e.planned ? ' plan' : ''}" data-a="${e.planned ? 'plan-open' : 'edit'}" data-id="${e.planned ? e.ruleId : e.id}">
         <span class="ic"><i style="background:${e.color}">${esc(e.cat.slice(0, 1))}</i></span>
-        <span class="box"><span class="top"><b style="color:${e.kind === 'income' ? INCOME : 'var(--text)'}">${e.kind === 'income' ? '+' : ''}${yen(e.amount)}</b><small>${e.ruleId ? '↻ ' : ''}${hm(dt(e))}</small></span>
+        <span class="box"><span class="top"><b style="color:${e.kind === 'income' ? INCOME : 'var(--text)'}">${e.kind === 'income' ? '+' : ''}${yen(e.amount)}</b><small>${e.planned ? '<span class="tag-plan">予定</span>' : ''}${e.ruleId ? '↻ ' : ''}${hm(dt(e))}</small></span>
         <span class="c">${esc(e.cat)}（${esc(e.genre)}）</span>
         ${e.memo ? `<span class="m">${ic('clip', 13)}${esc(e.memo)}</span>` : ''}</span>
       </button>`).join('')}
@@ -724,7 +750,7 @@ function vHistList() {
         <button class="pbtn" data-a="open-period" aria-label="表示期間 ${label} ${rangeText(r)}。タップで変更">${ic('cal', 16)}<b>${label}</b><span>${rangeText(r)}</span>${ic('chevD', 12, 2.2)}</button>
         <button class="pbtn fit" data-a="h-sort" aria-label="並び順 ${h.asc ? '古い順（昇順）' : '新しい順（降順）'}。タップで切り替え">${ic('sort', 16)}${h.asc ? '古い順' : '新しい順'}</button>
       </div>
-      <div class="hsum"><span>${items.length}件</span><span>収入 <b class="income">${yen(total(items, 'income'))}</b></span><span>支出 <b class="expense">${yen(total(items, 'expense'))}</b></span></div>
+      <div class="hsum"><span>${items.length}件${plans.length ? `＋予定${plans.length}件` : ''}</span><span>収入 <b class="income">${yen(total(items, 'income'))}</b></span><span>支出 <b class="expense">${yen(total(items, 'expense'))}</b></span></div>
     </div>
     <div class="scroll" data-scroll="hlist"><div class="timeline">${tl}</div></div>`;
 }
@@ -732,26 +758,38 @@ function vHistList() {
 function vHistCal() {
   const h = U.hist, ym = h.calYM;
   const list = inYM(S.entries, ym);
-  const exp = {}, inc = {};
-  for (const e of list) { const d = dt(e).getDate(); (e.kind === 'expense' ? exp : inc)[d] = ((e.kind === 'expense' ? exp : inc)[d] || 0) + e.amount; }
+  const plans = plannedEntries(YM.start(ym), addDays(YM.end(ym), -1));
+  const exp = {}, inc = {}, pExp = {}, pInc = {};
+  const addTo = (m, d, v) => { m[d] = (m[d] || 0) + v; };
+  for (const e of list) addTo(e.kind === 'expense' ? exp : inc, dt(e).getDate(), e.amount);
+  for (const e of plans) addTo(e.kind === 'expense' ? pExp : pInc, dt(e).getDate(), e.amount);
   const first = YM.start(ym).getDay();
   const todayK = ymd(new Date());
+  const now = new Date();
   let cells = '';
   for (let i = 0; i < first; i++) cells += '<span></span>';
   for (let d = 1; d <= YM.days(ym); d++) {
     const date = new Date(ym.y, ym.m - 1, d), k = ymd(date), w = date.getDay();
-    const cls = [k === h.selDay ? 'sel' : '', k === todayK ? 'today' : '', date > new Date() ? 'fut' : '', w === 0 ? 'sun' : w === 6 ? 'sat' : ''].join(' ');
-    cells += `<button class="${cls}" data-a="cal-day" data-d="${k}" aria-label="${ym.m}月${d}日 支出 ${yen(exp[d] || 0)}${inc[d] ? ' 収入 ' + yen(inc[d]) : ''}">
-      <span class="d">${d}</span><span class="a">${exp[d] ? short(exp[d]) : '&nbsp;'}</span><i class="i" style="background:${inc[d] ? (k === h.selDay ? 'var(--on-gold)' : INCOME) : 'transparent'}"></i></button>`;
+    const isPlan = !exp[d] && !inc[d] && (pExp[d] || pInc[d]);
+    const iv = inc[d] || pInc[d] || 0, ev = exp[d] || pExp[d] || 0;
+    const cls = [k === h.selDay ? 'sel' : '', k === todayK ? 'today' : '', date > now ? 'fut' : '', w === 0 ? 'sun' : w === 6 ? 'sat' : '', isPlan ? 'plan' : ''].join(' ');
+    const label = `${ym.m}月${d}日${iv ? ` 収入 ${yen(iv)}` : ''}${ev ? ` 支出 ${yen(ev)}` : ''}${isPlan ? '（予定）' : ''}`;
+    cells += `<button class="${cls}" data-a="cal-day" data-d="${k}" aria-label="${label}">
+      <span class="d">${d}</span><span class="n in">${iv ? short(iv) : '&nbsp;'}</span><span class="n ex">${ev ? short(ev) : '&nbsp;'}</span></button>`;
   }
   const sel = parse(h.selDay);
-  const dayList = S.entries.filter((e) => ymd(dt(e)) === h.selDay).sort((a, b) => dt(a) - dt(b));
+  const dayList = S.entries.filter((e) => ymd(dt(e)) === h.selDay)
+    .concat(plans.filter((e) => ymd(dt(e)) === h.selDay))
+    .sort((a, b) => dt(a) - dt(b));
+  const pI = total(plans, 'income'), pE = total(plans, 'expense');
   return `<div class="scroll" data-scroll="hcal"><div class="pad" style="gap:12px">
     ${monthSel(ym, 'cal')}
-    <div class="mini-tot"><div><span>支出</span><b class="expense">${yen(total(list, 'expense'))}</b></div><div><span>収入</span><b class="income">${yen(total(list, 'income'))}</b></div></div>
-    <div style="display:flex;flex-direction:column;gap:6px">
+    <div class="mini-tot"><div><span>収入</span><b class="income">${yen(total(list, 'income'))}</b></div><div><span>支出</span><b class="expense">${yen(total(list, 'expense'))}</b></div></div>
+    ${plans.length ? `<p class="note" style="margin-top:-4px">このほか予定：収入 ${yen(pI)}・支出 ${yen(pE)}（薄い数字）</p>` : ''}
+    <div class="cal-wrap" data-noswipe aria-label="カレンダー（上下にスワイプで月を移動）">
       <div class="cal-head">${WD.map((w, i) => `<span style="color:${i === 0 ? 'var(--sun)' : i === 6 ? 'var(--sat)' : ''}">${w}</span>`).join('')}</div>
       <div class="cal">${cells}</div>
+      <div class="cal-legend"><span class="hint-swipe">上下スワイプで月を移動</span><span><i style="background:${INCOME}"></i>上：収入</span><span><i style="background:${EXPENSE}"></i>下：支出</span></div>
     </div>
     <section aria-label="選択した日の記録">
       <div style="display:flex;justify-content:space-between;align-items:center"><h2 class="big" style="font-size:15px">${sel.getMonth() + 1}月${sel.getDate()}日（${WD[sel.getDay()]}）</h2>
@@ -1037,6 +1075,7 @@ function saveEditor(o) {
     if (o.rep.on) {
       const r = Object.assign({ id: uid(), memo: o.memo.trim(), kind: o.kind, amount, cat: info.cat, genre: info.genre, color: info.color,
         start: o.date, active: true, lastGen: null, genCount: 0, createdAt: toLocal(new Date()) }, repFields(o.rep));
+      if (r.fromMode === 'today') r.fromDate = ymd(new Date());
       S.rules.push(r);
       const n = generateRecurring();
       toast(n ? `繰り返しを登録し、${n}件を記録しました` : '繰り返しを登録しました');
@@ -1126,6 +1165,14 @@ function repeatFields(r, startStr) {
       ${r.end === 'count' ? `<div class="line"><span>回数</span>${stepper(r.endCount + '回', 'rp-cnt', '回数')}</div>` : ''}
       ${r.end === 'date' ? `<label class="line"><span>終了日</span><input type="date" class="selbox" style="flex:0 0 auto" data-f="rp-ed" value="${esc(r.endDate)}" min="${esc(startStr.slice(0, 10))}"></label>` : ''}
     </div>
+    <div class="group"><span class="lbl">過去の分の記録</span>
+      ${seg([['start', '開始日から'], ['today', '今日から'], ['date', '日付を指定']], r.fromMode || 'start', 'rp-from', 'small')}
+      ${r.fromMode === 'date' ? `<label class="line"><span>この日から記録</span><input type="date" class="selbox" style="flex:0 0 auto" data-f="rp-fd" value="${esc(r.fromDate)}"></label>` : ''}
+      <p class="note">${{ start: '開始日が過去なら、開始日の分からすべて記録します。', today: '今日より前の分は記録せず、今日以降の分だけ記録します。', date: '指定した日より前の分は記録しません。' }[r.fromMode || 'start']}</p>
+      <span class="lbl" style="margin-top:4px">未来の予定</span>
+      ${seg([[0, 'なし'], [1, '1か月'], [3, '3か月'], [6, '半年'], [12, '1年']], Number(r.ahead) || 0, 'rp-ahead', 'small')}
+      <p class="note">${Number(r.ahead) ? `この先${{ 1: '1か月', 3: '3か月', 6: '半年', 12: '1年' }[r.ahead]}分の予定を、履歴とカレンダーに「予定」として薄く表示します。集計には入らず、その日になると自動で記録されます。` : '先の予定は表示しません。その日になったら自動で記録します。'}</p>
+    </div>
     <div class="summary">${ic('cal', 16)}<b>${esc(repSummary(r, startStr))}</b></div>`;
 }
 function vRepeat(o) {
@@ -1214,7 +1261,9 @@ function saveRule(o) {
   if (o.id) {
     const r = S.rules.find((x) => x.id === o.id);
     if (r) {
+      const prevMode = r.fromMode;
       Object.assign(r, fields, repFields(o.rep));
+      if (r.fromMode === 'today' && prevMode !== 'today') r.fromDate = ymd(new Date());
       if (o.active && !r.active) {
         const now = toLocal(new Date());
         if (!r.lastGen || r.lastGen < now) r.lastGen = now; // 停止中の分はさかのぼらない
@@ -1222,7 +1271,9 @@ function saveRule(o) {
       r.active = o.active;
     }
   } else {
-    S.rules.push(Object.assign({ id: uid(), active: true, lastGen: null, genCount: 0, createdAt: toLocal(new Date()) }, fields, repFields(o.rep)));
+    const nr = Object.assign({ id: uid(), active: true, lastGen: null, genCount: 0, createdAt: toLocal(new Date()) }, fields, repFields(o.rep));
+    if (nr.fromMode === 'today') nr.fromDate = ymd(new Date());
+    S.rules.push(nr);
   }
   const n = generateRecurring();
   persist();
@@ -1424,7 +1475,7 @@ function act(a, el, ev) {
 
     // --- 繰り返し（記録画面・設定の両方） ---
     case 'rp-on': { const ed = findOv('editor'); ed.rep.on = !ed.rep.on; return render(); }
-    case 'rp-n': case 'rp-unit': case 'rp-wd': case 'rp-me': case 'rp-md': case 'rp-end': case 'rp-cnt': case 'rp-hol': {
+    case 'rp-n': case 'rp-unit': case 'rp-wd': case 'rp-me': case 'rp-md': case 'rp-end': case 'rp-cnt': case 'rp-hol': case 'rp-from': case 'rp-ahead': {
       const holder = findOv('rule') && top().type === 'rule' ? top() : findOv('editor');
       const r = holder.rep, v = Number(d.v);
       r.touched = true;
@@ -1439,6 +1490,8 @@ function act(a, el, ev) {
       if (a === 'rp-end') r.end = d.v;
       if (a === 'rp-cnt') r.endCount = clamp(r.endCount + v, 1, 999);
       if (a === 'rp-hol') r.holiday = d.v;
+      if (a === 'rp-from') { r.fromMode = d.v; if (!r.fromDate) r.fromDate = ymd(new Date()); }
+      if (a === 'rp-ahead') r.ahead = Number(d.v);
       return render();
     }
 
@@ -1464,6 +1517,7 @@ function act(a, el, ev) {
 
     // --- 設定：繰り返し入力 ---
     case 'rule-new': return openOv(ruleEditor(null));
+    case 'plan-open': { const r = S.rules.find((x) => x.id === d.id); if (r) { toast('予定は繰り返し入力から変更できます'); openOv(ruleEditor(r)); } return; }
     case 'rule-open': { const r = S.rules.find((x) => x.id === d.id); if (r) openOv(ruleEditor(r)); return; }
     case 'rule-toggle': {
       const r = S.rules.find((x) => x.id === d.id); if (!r) return;
@@ -1526,12 +1580,18 @@ function field(f, el, evType) {
       setYM(k, { y: Number(v), m: cur.m });
       return render();
     }
-    case 'ed-date': if (v) { o.date = v; if (!o.rep.touched) o.rep = Object.assign(defaultRep(v), { on: o.rep.on, holiday: o.rep.holiday || 'none' }); if (evType === 'change') render(); } return;
+    case 'ed-date': if (v) { o.date = v; if (!o.rep.touched) o.rep = Object.assign(defaultRep(v), { on: o.rep.on, holiday: o.rep.holiday || 'none', fromMode: o.rep.fromMode, fromDate: o.rep.fromDate, ahead: o.rep.ahead }); if (evType === 'change') render(); } return;
     case 'ed-memo': o.memo = v; return;
     case 'cs-q': o.q = v; return render();
     case 'cs-nn': o.nn = v; return;
     case 'cs-ng': o.ng = v; return;
     case 'cs-to': o.addTo = v; return;
+    case 'rp-fd': {
+      const holder = top().type === 'rule' ? top() : findOv('editor');
+      if (v) { holder.rep.fromDate = v; holder.rep.touched = true; }
+      if (evType === 'change') render();
+      return;
+    }
     case 'rp-ed': {
       const holder = top().type === 'rule' ? top() : findOv('editor');
       if (v) { holder.rep.endDate = v; holder.rep.touched = true; }
@@ -1545,7 +1605,7 @@ function field(f, el, evType) {
     case 'rule-amt': o.amount = v.replace(/[^0-9]/g, ''); if (evType === 'change') { el.value = o.amount; } return;
     case 'rule-cat': o.catId = v; return;
     case 'rule-memo': o.memo = v; return;
-    case 'rule-start': if (v) { o.start = v; if (!o.rep.touched) o.rep = Object.assign(defaultRep(v), { on: true }); if (evType === 'change') render(); } return;
+    case 'rule-start': if (v) { o.start = v; if (!o.rep.touched) o.rep = Object.assign(defaultRep(v), { on: true, holiday: o.rep.holiday, fromMode: o.rep.fromMode, fromDate: o.rep.fromDate, ahead: o.rep.ahead }); if (evType === 'change') render(); } return;
     default:
   }
 }
@@ -1637,6 +1697,39 @@ function swipeTo(dir) {
   render();
   const el = area();
   if (el) el.classList.add(dir > 0 ? 'in-r' : 'in-l');
+}
+
+
+// ===================== カレンダー：上下スワイプで月を移動 =====================
+let calSwipe = null;
+document.addEventListener('touchstart', (ev) => {
+  calSwipe = null;
+  if (U.ov.length || U.tab !== 'history' || U.hist.view !== 'cal' || ev.touches.length !== 1) return;
+  if (!ev.target.closest('.cal-wrap')) return;
+  const t = ev.touches[0];
+  calSwipe = { x: t.clientX, y: t.clientY, t: Date.now() };
+}, { passive: true });
+document.addEventListener('touchend', (ev) => {
+  if (!calSwipe) return;
+  const t = ev.changedTouches[0];
+  const dx = t.clientX - calSwipe.x, dy = t.clientY - calSwipe.y, time = Date.now() - calSwipe.t;
+  calSwipe = null;
+  if (time > 900) return;
+  if (Math.abs(dy) >= 45 && Math.abs(dy) > Math.abs(dx) * 1.3) calMove(dy < 0 ? 1 : -1); // 上へ：次の月／下へ：前の月
+  else if (Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy) * 1.5) swipeTo(dx < 0 ? 1 : -1);
+}, { passive: true });
+function calMove(dir) {
+  const next = YM.add(U.hist.calYM, dir);
+  const wrap = () => document.querySelector('.cal-wrap');
+  if (dir > 0 && YM.cmp(next, latestYM('cal')) > 0) { // これより先は表示できない
+    const el = wrap();
+    if (el) { el.classList.remove('bump-u'); void el.offsetWidth; el.classList.add('bump-u'); }
+    return;
+  }
+  setYM('cal', next);
+  render();
+  const el = wrap();
+  if (el) el.classList.add(dir > 0 ? 'in-u' : 'in-d');
 }
 
 // ===================== 起動 =====================

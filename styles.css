@@ -347,3 +347,31 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 @keyframes bumpR { 35% { transform: translateX(-12px); } to { transform: none; } }
 @keyframes bumpL { 35% { transform: translateX(12px); } to { transform: none; } }
 @media (prefers-reduced-motion: reduce) { .in-r, .in-l, .bump-r, .bump-l { animation: none; } }
+
+/* ===== カレンダー：上に収入、下に支出 ===== */
+.cal button { min-height: 58px; gap: 1px; }
+.cal button .n { font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1.25; }
+.cal button .n.in { color: var(--income); }
+.cal button .n.ex { color: var(--expense); }
+.cal button.plan .n { opacity: .5; }
+.cal button.sel .n { color: var(--on-gold); font-weight: 700; opacity: 1; }
+.cal-legend { display: flex; justify-content: flex-end; gap: 12px; font-size: 10px; color: var(--sub); }
+.cal-legend span { display: flex; align-items: center; gap: 4px; }
+.cal-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+/* 予定 */
+.tag-plan { display: inline-block; font-size: 10px; font-weight: 700; color: var(--gold-text); border: 1px solid #6B5B3E; border-radius: 6px; padding: 0 5px; margin-right: 6px; line-height: 1.5; vertical-align: 1px; }
+.row.plan { opacity: .65; }
+.titem.plan .box { border-style: dashed; opacity: .7; }
+.titem.plan .ic i { opacity: .6; }
+.day.future .knot i { background: transparent; border: 2px solid #6E6A64; }
+
+/* ===== カレンダーの上下スワイプ ===== */
+.cal-wrap { display: flex; flex-direction: column; gap: 6px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.hint-swipe { margin-right: auto; color: var(--muted); }
+.in-u { animation: inU .22s ease-out; }
+.in-d { animation: inD .22s ease-out; }
+.bump-u { animation: bumpU .28s ease-out; }
+@keyframes inU { from { transform: translateY(28px); opacity: .35; } to { transform: none; opacity: 1; } }
+@keyframes inD { from { transform: translateY(-28px); opacity: .35; } to { transform: none; opacity: 1; } }
+@keyframes bumpU { 35% { transform: translateY(-10px); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .in-u, .in-d, .bump-u { animation: none; } }

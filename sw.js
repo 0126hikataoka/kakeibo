@@ -1,15 +1,15 @@
 // オフライン用：アプリ本体をすべて端末に保存し、通信なしで起動できるようにする
-const VERSION = 'kakeibo-v1.1.0'; // 更新するときはこの数字を上げる
+const VERSION = 'kakeibo-v1.3.0'; // 更新するときはこの数字を上げる
 const FILES = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './manifest.webmanifest',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/maskable-512.png',
-  './icons/apple-touch-icon.png'
+  './icon-192.png',
+  './icon-512.png',
+  './maskable-512.png',
+  './apple-touch-icon.png'
 ];
 
 self.addEventListener('install', (event) => {
