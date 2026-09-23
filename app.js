@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 // ===================== 小道具 =====================
 const $ = (s, r = document) => r.querySelector(s);
@@ -179,11 +179,68 @@ function deleteGenre(g) {
   S.genres = S.genres.filter((x) => x.id !== g.id);
 }
 
+
+// ===================== 日本の祝日（通信なしで計算） =====================
+const holidayCache = new Map();
+function nthMonday(y, m, n) { // m: 0〜11
+  const first = new Date(y, m, 1).getDay();
+  return 1 + ((8 - first) % 7) + (n - 1) * 7;
+}
+function holidaysOf(y) {
+  if (holidayCache.has(y)) return holidayCache.get(y);
+  const set = new Set();
+  const add = (m, d) => set.add(`${y}-${pad(m + 1)}-${pad(d)}`);
+  add(0, 1);                                   // 元日
+  add(0, nthMonday(y, 0, 2));                  // 成人の日
+  add(1, 11);                                  // 建国記念の日
+  if (y >= 2020) add(1, 23);                   // 天皇誕生日
+  else if (y <= 2018) add(11, 23);
+  add(2, Math.floor(20.8431 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4))); // 春分の日
+  add(3, 29);                                  // 昭和の日
+  add(4, 3); add(4, 4); add(4, 5);             // 憲法記念日・みどりの日・こどもの日
+  if (y === 2020) { add(6, 23); add(6, 24); add(7, 10); }      // 東京五輪の特例
+  else if (y === 2021) { add(6, 22); add(6, 23); add(7, 8); }
+  else {
+    add(6, nthMonday(y, 6, 3));                // 海の日
+    add(7, 11);                                // 山の日
+    add(9, nthMonday(y, 9, 2));                // スポーツの日
+  }
+  add(8, nthMonday(y, 8, 3));                  // 敬老の日
+  add(8, Math.floor(23.2488 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4))); // 秋分の日
+  add(10, 3); add(10, 23);                     // 文化の日・勤労感謝の日
+  // 国民の休日（祝日にはさまれた平日）
+  for (const k of [...set]) {
+    const d = parse(k), next2 = addDays(d, 2), mid = addDays(d, 1);
+    if (set.has(ymd(next2)) && !set.has(ymd(mid)) && mid.getDay() !== 0) set.add(ymd(mid));
+  }
+  // 振替休日（祝日が日曜なら、次の祝日でない日）
+  for (const k of [...set].sort()) {
+    const d = parse(k);
+    if (d.getDay() === 0) {
+      let n = addDays(d, 1);
+      while (set.has(ymd(n))) n = addDays(n, 1);
+      set.add(ymd(n));
+    }
+  }
+  holidayCache.set(y, set);
+  return set;
+}
+const isHoliday = (d) => holidaysOf(d.getFullYear()).has(ymd(d));
+const isDayOff = (d) => d.getDay() === 0 || d.getDay() === 6 || isHoliday(d);
+/** 土日祝なら、前（before）または後（after）の平日にずらす */
+function shiftOff(d, mode) {
+  if (!mode || mode === 'none') return d;
+  let x = d, guard = 0;
+  while (isDayOff(x) && guard++ < 14) x = addDays(x, mode === 'before' ? -1 : 1);
+  return x;
+}
+const HOLIDAY_LABEL = { none: 'そのまま', before: '前の平日', after: '後の平日' };
+
 // ===================== 繰り返し =====================
 function defaultRep(dateStr) {
   const d = parse(dateStr);
   const end = new Date(d.getFullYear(), d.getMonth() + 6, d.getDate());
-  return { on: false, interval: 1, unit: 'month', weekdays: [d.getDay() + 1], monthDay: d.getDate(), monthEnd: false, end: 'none', endCount: 12, endDate: ymd(end) };
+  return { on: false, interval: 1, unit: 'month', weekdays: [d.getDay() + 1], monthDay: d.getDate(), monthEnd: false, end: 'none', endCount: 12, endDate: ymd(end), holiday: 'none' };
 }
 function everyText(r) {
   const n = r.interval;
@@ -201,10 +258,11 @@ function repSummary(r, startStr) {
   let s = parts.join(' ');
   if (r.end === 'count') s += `・${r.endCount}回まで`;
   if (r.end === 'date' && r.endDate) s += `・${slash(parse(r.endDate))}まで`;
+  if (r.unit !== 'day' && r.holiday && r.holiday !== 'none') s += `（土日祝は${HOLIDAY_LABEL[r.holiday]}）`;
   return s;
 }
 function repFields(r) {
-  return { interval: r.interval, unit: r.unit, weekdays: r.weekdays.slice(), monthDay: r.monthDay, monthEnd: r.monthEnd, end: r.end, endCount: r.endCount, endDate: r.endDate };
+  return { interval: r.interval, unit: r.unit, weekdays: r.weekdays.slice(), monthDay: r.monthDay, monthEnd: r.monthEnd, end: r.end, endCount: r.endCount, endDate: r.endDate, holiday: r.unit === 'day' ? 'none' : (r.holiday || 'none') };
 }
 
 /** ルールの発生日時（開始日〜limit） */
@@ -212,17 +270,26 @@ function occurrences(rule, limit) {
   const st = parse(rule.start);
   const start = sod(st);
   const at = (y, m, d) => new Date(y, m, d, st.getHours(), st.getMinutes());
-  let hardEnd = sod(limit);
+  const mode0 = rule.unit === 'day' ? 'none' : (rule.holiday || 'none');
+  // 「前の平日」の場合、少し先の予定日が今日以前にずれることがあるので1週間先まで調べる
+  let hardEnd = mode0 === 'before' ? addDays(sod(limit), 7) : sod(limit);
   if (rule.end === 'date' && rule.endDate) { const e = sod(parse(rule.endDate)); if (e < hardEnd) hardEnd = e; }
   const maxCount = rule.end === 'count' ? Math.max(1, rule.endCount | 0) : Infinity;
   const n = Math.max(1, rule.interval | 0);
   const out = [];
   const SAFE = 20000;
+  const mode = mode0;
+  const limitDay = sod(limit);
+  let counted = 0;
+  const seen = new Set();
   const push = (day) => {
     if (day > hardEnd) return false;
     if (day >= start) {
-      out.push(at(day.getFullYear(), day.getMonth(), day.getDate()));
-      if (out.length >= maxCount) return false;
+      counted++;
+      const s = shiftOff(day, mode); // 土日祝なら前後の平日へ
+      const key = ymd(s);
+      if (s <= limitDay && !seen.has(key)) { seen.add(key); out.push(at(s.getFullYear(), s.getMonth(), s.getDate())); }
+      if (counted >= maxCount) return false;
     }
     return true;
   };
@@ -534,7 +601,7 @@ function lines({ series, xMax = 31, h = 170, sel = 1, key, signedAxis = false, a
     const v = s.values[sel - 1];
     if (v != null) g += `<circle cx="${x(sel)}" cy="${y(v)}" r="4" fill="${s.color}" stroke="#17171A" stroke-width="2"/>`;
   });
-  return `<svg class="chart" viewBox="0 0 ${W} ${h}" role="img" aria-label="${esc(aria)}" data-a="pace-tap" data-k="${key}" data-padl="${padL}" data-w="${W}" data-xmax="${xMax}" style="cursor:crosshair">${g}</svg>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${h}" role="img" aria-label="${esc(aria)}" data-a="pace-tap" data-noswipe data-k="${key}" data-padl="${padL}" data-w="${W}" data-xmax="${xMax}" style="cursor:crosshair">${g}</svg>`;
 }
 
 function balanceCard(inc, exp, title, subtitle, mode) {
@@ -620,7 +687,7 @@ function vHistory() {
   const tabs = `<div class="htabs" role="tablist">
     <button class="${h.view === 'list' ? 'on' : ''}" data-a="h-view" data-v="list" role="tab" aria-selected="${h.view === 'list'}">一覧</button>
     <button class="${h.view === 'cal' ? 'on' : ''}" data-a="h-view" data-v="cal" role="tab" aria-selected="${h.view === 'cal'}">カレンダー</button></div>`;
-  return `<div class="screen"><div class="title-bar">履歴</div>${tabs}${h.view === 'list' ? vHistList() : vHistCal()}</div>`;
+  return `<div class="screen"><div class="title-bar">履歴</div>${tabs}<div class="swipe-area">${h.view === 'list' ? vHistList() : vHistCal()}</div></div>`;
 }
 
 function vHistList() {
@@ -708,7 +775,7 @@ function vAnalysis() {
       <div style="display:flex;justify-content:center">${monthSel(a.ym, 'ana')}</div>
       ${seg([['bal', '収支'], ['exp', '支出'], ['inc', '収入'], ['trend', '推移']], a.tab, 'ana-tab', 'small')}
     </div>
-    <div class="scroll" data-scroll="ana-${a.tab}"><div class="pad" style="padding-top:14px;gap:14px">${content}</div></div></div>`;
+    <div class="scroll swipe-area" data-scroll="ana-${a.tab}"><div class="pad" style="padding-top:14px;gap:14px">${content}</div></div></div>`;
 }
 const card = (inner, label = '') => `<section class="card" ${label ? `aria-label="${esc(label)}"` : ''} style="display:flex;flex-direction:column;gap:14px">${inner}</section>`;
 
@@ -1050,6 +1117,9 @@ function repeatFields(r, startStr) {
         ${r.monthEnd ? '' : `<div class="line"><span>日付</span>${stepper(r.monthDay + '日', 'rp-md', '日付')}</div>`}` : ''}
       ${r.unit === 'year' ? `<div class="line"><span>日付</span><span class="sub">毎年 ${st.getMonth() + 1}月${st.getDate()}日</span></div>` : ''}
     </div>
+    ${r.unit !== 'day' ? `<div class="group"><span class="lbl">土日・祝日にあたる場合</span>
+      ${seg([['none', 'そのまま'], ['before', '前の平日'], ['after', '後の平日']], r.holiday || 'none', 'rp-hol', 'small')}
+      <p class="note">${{ none: '土日・祝日でも、その日に記録します。', before: '例：給料日が土曜なら、前の平日（金曜）に記録します。', after: '例：引き落とし日が日曜なら、後の平日（月曜）に記録します。' }[r.holiday || 'none']}</p></div>` : ''}
     <div class="group"><span class="lbl">期間</span>
       <div class="line"><span>開始日</span><span class="sub">${isNaN(st) ? '—' : fullDate(st)}</span></div>
       ${seg([['none', 'なし'], ['count', '回数'], ['date', '日付']], r.end, 'rp-end', 'small')}
@@ -1354,7 +1424,7 @@ function act(a, el, ev) {
 
     // --- 繰り返し（記録画面・設定の両方） ---
     case 'rp-on': { const ed = findOv('editor'); ed.rep.on = !ed.rep.on; return render(); }
-    case 'rp-n': case 'rp-unit': case 'rp-wd': case 'rp-me': case 'rp-md': case 'rp-end': case 'rp-cnt': {
+    case 'rp-n': case 'rp-unit': case 'rp-wd': case 'rp-me': case 'rp-md': case 'rp-end': case 'rp-cnt': case 'rp-hol': {
       const holder = findOv('rule') && top().type === 'rule' ? top() : findOv('editor');
       const r = holder.rep, v = Number(d.v);
       r.touched = true;
@@ -1368,6 +1438,7 @@ function act(a, el, ev) {
       if (a === 'rp-md') r.monthDay = clamp(r.monthDay + v, 1, 31);
       if (a === 'rp-end') r.end = d.v;
       if (a === 'rp-cnt') r.endCount = clamp(r.endCount + v, 1, 999);
+      if (a === 'rp-hol') r.holiday = d.v;
       return render();
     }
 
@@ -1455,7 +1526,7 @@ function field(f, el, evType) {
       setYM(k, { y: Number(v), m: cur.m });
       return render();
     }
-    case 'ed-date': if (v) { o.date = v; if (!o.rep.touched) o.rep = Object.assign(defaultRep(v), { on: o.rep.on }); if (evType === 'change') render(); } return;
+    case 'ed-date': if (v) { o.date = v; if (!o.rep.touched) o.rep = Object.assign(defaultRep(v), { on: o.rep.on, holiday: o.rep.holiday || 'none' }); if (evType === 'change') render(); } return;
     case 'ed-memo': o.memo = v; return;
     case 'cs-q': o.q = v; return render();
     case 'cs-nn': o.nn = v; return;
@@ -1530,6 +1601,44 @@ function importJSON(file) {
   reader.readAsText(file);
 }
 
+
+// ===================== スワイプで横の画面へ（端から端へはループしない） =====================
+const SWIPE_ORDER = { history: ['list', 'cal'], analysis: ['bal', 'exp', 'inc', 'trend'] };
+let swipe = null;
+document.addEventListener('touchstart', (ev) => {
+  swipe = null;
+  if (U.ov.length || !SWIPE_ORDER[U.tab] || ev.touches.length !== 1) return;
+  const t = ev.touches[0];
+  if (t.clientX < 20 || t.clientX > window.innerWidth - 20) return; // 画面の端はiPhoneの操作と重なるため除外
+  if (!ev.target.closest('.swipe-area') || ev.target.closest('input, select, textarea, [data-noswipe]')) return;
+  swipe = { x: t.clientX, y: t.clientY, t: Date.now() };
+}, { passive: true });
+document.addEventListener('touchend', (ev) => {
+  if (!swipe) return;
+  const t = ev.changedTouches[0];
+  const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y, time = Date.now() - swipe.t;
+  swipe = null;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5 || time > 900) return;
+  swipeTo(dx < 0 ? 1 : -1);
+}, { passive: true });
+document.addEventListener('touchcancel', () => { swipe = null; }, { passive: true });
+function swipeTo(dir) {
+  const order = SWIPE_ORDER[U.tab];
+  if (!order) return;
+  const cur = U.tab === 'history' ? U.hist.view : U.ana.tab;
+  const j = order.indexOf(cur) + dir;
+  const area = () => document.querySelector('.swipe-area');
+  if (j < 0 || j >= order.length) { // 端ではループせず、軽く揺らして知らせる
+    const el = area();
+    if (el) { el.classList.remove('bump-l', 'bump-r'); void el.offsetWidth; el.classList.add(dir > 0 ? 'bump-r' : 'bump-l'); }
+    return;
+  }
+  if (U.tab === 'history') U.hist.view = order[j]; else U.ana.tab = order[j];
+  render();
+  const el = area();
+  if (el) el.classList.add(dir > 0 ? 'in-r' : 'in-l');
+}
+
 // ===================== 起動 =====================
 document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-a]');
@@ -1572,7 +1681,18 @@ async function start() {
   render();
   try { if (navigator.storage && navigator.storage.persist) U.persisted = await navigator.storage.persist(); } catch (_) { /* 未対応 */ }
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(() => { /* オフライン化できない環境 */ });
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      // アプリを開くたびに新しい版がないか確認（通信できるときだけ）
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => { /* オフライン化できない環境 */ });
+    // 新しい版が入ったら、1回だけ自動で読み込み直す
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded) return;
+      reloaded = true;
+      writeState().finally(() => location.reload());
+    });
   }
   // 日付が変わったら繰り返し入力を反映
   setInterval(() => { if (generateRecurring()) render(); }, 60 * 1000);

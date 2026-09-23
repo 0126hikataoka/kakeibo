@@ -1,5 +1,5 @@
 // オフライン用：アプリ本体をすべて端末に保存し、通信なしで起動できるようにする
-const VERSION = 'kakeibo-v1.0.0';
+const VERSION = 'kakeibo-v1.1.0'; // 更新するときはこの数字を上げる
 const FILES = [
   './',
   './index.html',
@@ -13,7 +13,7 @@ const FILES = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {

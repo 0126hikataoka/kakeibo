@@ -334,3 +334,16 @@ h2.big { margin: 0; font-family: var(--serif); font-size: 16px; }
 @media (prefers-reduced-motion: reduce) {
   .page.anim, .anim .sheet, .sheet-bg.anim { animation: none; }
 }
+
+/* ===== スワイプ ===== */
+.swipe-area { flex: 1; min-height: 0; display: flex; flex-direction: column; touch-action: pan-y; }
+.swipe-area.scroll { display: block; }
+.in-r { animation: inR .22s ease-out; }
+.in-l { animation: inL .22s ease-out; }
+.bump-r { animation: bumpR .28s ease-out; }
+.bump-l { animation: bumpL .28s ease-out; }
+@keyframes inR { from { transform: translateX(32px); opacity: .35; } to { transform: none; opacity: 1; } }
+@keyframes inL { from { transform: translateX(-32px); opacity: .35; } to { transform: none; opacity: 1; } }
+@keyframes bumpR { 35% { transform: translateX(-12px); } to { transform: none; } }
+@keyframes bumpL { 35% { transform: translateX(12px); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .in-r, .in-l, .bump-r, .bump-l { animation: none; } }
